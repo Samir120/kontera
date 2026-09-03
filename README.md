@@ -1,51 +1,55 @@
+<div align="center">
+
 # Kontera
 
-> *kontera* (v.) — Swedish, "to assign accounts to a transaction". Deciding which
-> accounts a transaction posts to is the operation this library exists to
-> perform; everything else is downstream of it.
->
-> Name verified free on crates.io and npm as of 2026-09-03. Reserve both before
-> writing code — squatting is cheap and renaming later is not.
+**Swedish bookkeeping as an embeddable Rust library.**
+Commerce events in — balanced BAS verifications and SIE 4I out. No database, no server.
 
-**Swedish bookkeeping as a library.** Feed it a commerce event log, get back
-balanced verifications on BAS accounts and a SIE 4I file your accountant can
-import into Fortnox or Visma.
+[![CI](https://github.com/swadestack/kontera/actions/workflows/ci.yml/badge.svg)](https://github.com/swadestack/kontera/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
+[![MSRV](https://img.shields.io/badge/rustc-1.XX%2B-orange)](#installation)
 
-```rust
-let ledger = kontera::post(&events, &config)?;
-let sie    = kontera_sie::write_4i(&ledger)?;
-```
+<!-- Uncomment at first publish:
+[![crates.io](https://img.shields.io/crates/v/kontera.svg)](https://crates.io/crates/kontera)
+[![docs.rs](https://docs.rs/kontera/badge.svg)](https://docs.rs/kontera)
+[![npm](https://img.shields.io/npm/v/kontera.svg)](https://www.npmjs.com/package/kontera)
+-->
 
-No database. No server. No admin UI. One pure function and an output file.
+</div>
+
+> [!WARNING]
+> **Pre-alpha. Nothing works yet.** The specification is complete and the
+> implementation has not started. Watch the repo if the idea is useful to you;
+> don't depend on it.
 
 ---
 
 ## The problem
 
-A Swedish webshop takes 40 orders on Monday for 50,000 kr including 25% moms.
-Two customers return items worth 1,000 kr. Stripe charges 1,168 kr in fees. On
+A Swedish webshop takes 40 orders on Monday: 50,000 kr including 25% moms. Two
+customers return items worth 1,000 kr. Stripe charges 1,168 kr in fees. On
 Thursday, one line appears on the bank statement:
 
-**47,832 kr**
+**47 832 kr**
 
-That number is all the bank feed knows about Monday. The bookkeeping it has to
-produce is nine postings across five accounts, and afterwards the payment
-provider receivable account must be *exactly zero*.
+That number is everything the bank feed knows about Monday. The bookkeeping it
+has to produce is nine postings across five accounts — and afterwards the payment
+provider receivable account must be **exactly zero**.
 
-Three things go wrong, and they are all the same mistake:
+Three things go wrong, and they're all the same mistake:
 
-1. **The payout is booked as revenue.** Revenue becomes 47,832 instead of
-   40,000. Fees disappear. Output VAT is understated by roughly 1,600 kr.
-2. **Timing drifts.** Sales happened Monday, cash landed Thursday. Across a
-   month boundary, the momsdeklaration is wrong.
-3. **Nothing checks.** There is no built-in assertion that
-   `payout == sales − refunds − fees`, so errors accumulate silently until
-   someone reconciles by hand at year-end.
+- **The payout is booked as revenue.** Revenue becomes 47,832 instead of 40,000.
+  Fees vanish. Output VAT is understated by roughly 1,600 kr.
+- **Timing drifts.** Sales happened Monday, cash arrived Thursday. Across a month
+  boundary, the momsdeklaration is wrong.
+- **Nothing checks.** There's no assertion that
+  `payout = sales − refunds − fees`, so errors accumulate silently until someone
+  reconciles by hand at year-end.
 
-## What this is
+## What Kontera does
 
-A pure Rust library that converts commerce events into Swedish bookkeeping and
-**refuses to emit output it cannot prove is correct**.
+Converts a commerce event log into correct Swedish bookkeeping — and **refuses to
+emit output it can't prove is right**.
 
 ```
 IN                        OUT
@@ -57,63 +61,172 @@ PayoutSettled                     ▼
 + account/VAT config      SIE 4I file (.si)
 ```
 
-Three properties define it:
+```rust
+use kontera::{post, Config, Event};
 
-- **It enforces the settlement invariant.** `payout == sales − refunds − fees`.
-  When that fails, you get an `Err`, not a plausible-looking wrong answer.
-  Unbalanced verifications are unrepresentable in the type system.
-- **It speaks Swedish.** BAS chart of accounts, moms at 25/12/6, EU reverse
-  charge, OSS, export. Output is SIE 4I — the format every Swedish accounting
-  system accepts.
-- **It embeds.** One core, three shells: a CLI, an npm package via WASM, and an
-  HTTP sidecar. `npm install` and call a function. No integration licence, no
-  external service, no merchant data leaving the host's server.
+let events: Vec<Event> = serde_json::from_str(&log)?;
+let config = Config::from_toml(&toml)?;
+
+let ledger = post(&events, &config)?;              // pure. no I/O, no state
+let sie    = kontera_sie::write_4i(&ledger, today)?;
+
+std::fs::write("2026-01.si", sie)?;                // hand this to an accountant
+```
+
+From Node, via WASM — no sidecar, no container, no network hop:
+
+```js
+import { post, writeSie } from 'kontera';
+
+const ledger = post(events, config);
+const sie    = writeSie(ledger, '2026-01-31');
+```
+
+### Three properties
+
+**It enforces the settlement invariant.** `payout = sales − refunds − fees`. When
+that fails you get an `Err` carrying the exact discrepancy, not a plausible
+looking wrong answer. Unbalanced verifications are unrepresentable in the type
+system — the constructor won't build one.
+
+**It speaks Swedish.** BAS chart of accounts, moms at 25/12/6, EU reverse charge,
+OSS, export outside the EU. Output is SIE 4I, the interchange format every
+Swedish accounting system accepts.
+
+**It embeds.** One pure core, three shells: a CLI, an npm package via WASM, and
+an HTTP sidecar. No integration licence, no external service, no merchant data
+leaving the host's server.
 
 ## Who it's for
 
-Not merchants. **Platform builders** — the person shipping a Swedish webshop who
-wants correct bookkeeping inside their own admin panel, and a clean SIE file for
-the merchant's accountant at year-end.
+Not merchants — **platform builders**. If you're shipping a Swedish webshop and
+want correct bookkeeping inside your own admin panel, plus a clean SIE file for
+the merchant's accountant at year-end, that's the gap this fills.
 
 > Stripe gives you payments as a library.
-> Nobody gives you Swedish bookkeeping as a library. This does.
+> Nobody gives you Swedish bookkeeping as a library.
 
-## What it is not
+## Why this doesn't already exist
 
-Not an accounting platform. Not an invoicing system. Not a Fortnox replacement.
-See [`docs/01-problem-and-scope.md`](docs/01-problem-and-scope.md) for the full
-non-goals list, which is the most important document in this repository.
+Adjacent tools each solve part of the problem:
+
+| | Embeddable | Swedish rules | Settlement-aware | Self-hosted |
+|---|:-:|:-:|:-:|:-:|
+| Formance, TigerBeetle, Blnk | ✅ | ❌ | ❌ | ✅ |
+| A2X, Link My Books, Synder | ❌ | ❌ | ✅ | ❌ |
+| Fortnox / Visma connectors | ❌ | ✅ | partial | ❌ |
+| Bigcapital | ✅ | ❌ | ❌ | ✅ |
+| **Kontera** | ✅ | ✅ | ✅ | ✅ |
+
+Ledger primitives exist but know nothing about moms, BAS or SIE. Swedish
+knowledge exists but only inside closed commercial platforms, with connectors
+acting as pipes into them.
+
+## Scope
+
+**In:** double-entry ledger on BAS accounts · four VAT scenarios (SE domestic,
+EU B2B reverse charge, EU B2C OSS, export) · settlement reconciliation ·
+SIE 4I export · CLI, WASM/npm, HTTP sidecar.
+
+**Deliberately out of v0.1:** persistence · HTTP server, auth, multi-tenancy ·
+invoicing, PDF, customers, products · Peppol / EN 16931 · bank feeds, camt.053,
+PSD2 · multi-currency · kontantmetoden · year-end and NE-bilaga · purchase side
+and input VAT · admin UI.
+
+Unsupported scenarios return a typed `ScenarioGap` error rather than a guess, so
+the boundary is visible in the output instead of hidden in the books. See
+[`docs/01-problem-and-scope.md`](docs/01-problem-and-scope.md).
 
 ## Status
 
-Pre-alpha. Nothing works yet. See [`docs/06-roadmap.md`](docs/06-roadmap.md).
+| Milestone | Exit criterion | |
+|---|---|:-:|
+| M1 Types & balance invariant | An unbalanced verification can't be constructed | ⬜ |
+| M2 VAT & posting rules | The worked example produces the exact posting table | ⬜ |
+| M3 SIE 4I & acceptance | A `.si` imports into Fortnox untouched, incl. `å ä ö` | ⬜ |
+| M4 Settlement & CLI | A tampered payout always errors with a useful delta | ⬜ |
+| M5 WASM, npm, first host | A real shop produces a month's SIE via `npm install` | ⬜ |
+
+M3 is the real gate. If a commercial Swedish system won't import the output,
+nothing else matters. Full plan in [`docs/06-roadmap.md`](docs/06-roadmap.md).
+
+## Installation
+
+Not published yet.
+
+```toml
+# Cargo.toml — once released
+[dependencies]
+kontera = "0.1"
+kontera-sie = "0.1"
+```
+
+```sh
+npm install kontera   # WASM build, no native toolchain required
+```
 
 ## Documentation
 
-[`STATE.md`](STATE.md) is the living project state — read it first.
+The specification is written and binding — worth reading before the code exists.
 
-| Document | Purpose |
+| | |
 |---|---|
-| [01 Problem & Scope](docs/01-problem-and-scope.md) | Problem statement, non-goals, success criteria |
-| [02 Domain Model](docs/02-domain-model.md) | Accounting concepts, BAS mapping, VAT scenarios, glossary |
-| [03 Architecture](docs/03-architecture.md) | Crate layout, purity boundary, integration targets |
-| [04 Public API](docs/04-public-api.md) | Event schema, config schema, error taxonomy, output contract |
-| [05 Testing Strategy](docs/05-testing-strategy.md) | Property tests, golden files, the acceptance test |
-| [06 Roadmap](docs/06-roadmap.md) | Ten-week plan with exit criteria |
-| [07 Release Engineering](docs/07-release-engineering.md) | Versioning, CI, publishing, licensing |
-| [08 Coding Standards](docs/08-coding-standards.md) | Rust conventions for this codebase |
-| [09 Working Agreement](docs/09-working-agreement.md) | Session protocol, Definition of Done, review checklist |
-| [Project Instructions](PROJECT-INSTRUCTIONS.md) | Paste into the Claude Project settings |
-| [STATE.md](STATE.md) | Where the project actually is, right now |
-| [ADRs](docs/adr/) | Architecture decision records |
+| [Problem & Scope](docs/01-problem-and-scope.md) | The problem, non-goals, success criteria |
+| [Domain Model](docs/02-domain-model.md) | BAS mapping, VAT scenarios, invariants, glossary |
+| [Architecture](docs/03-architecture.md) | Crate layout, the purity boundary, integration shapes |
+| [Public API](docs/04-public-api.md) | Event schema, config, error taxonomy, SIE contract |
+| [Testing Strategy](docs/05-testing-strategy.md) | Property tests, golden files, the acceptance test |
+| [Roadmap](docs/06-roadmap.md) | Milestones, exit criteria, risk register |
+| [Release Engineering](docs/07-release-engineering.md) | Versioning, CI, publishing, licensing |
+| [Coding Standards](docs/08-coding-standards.md) | Rust conventions for this codebase |
+| [ADRs](docs/adr/) | Why the core is pure, why decimals, why SIE 4I, why fail closed |
+
+## Contributing
+
+Too early for feature PRs — the API will churn. What's useful now:
+
+- **Corrections to the accounting.** If a BAS account, VAT scenario or
+  momsdeklaration mapping in [`02`](docs/02-domain-model.md) is wrong, please
+  open an issue. Anything marked `VERIFY` is explicitly unconfirmed.
+- **SIE import experience.** If you've made SIE 4I files that a Swedish system
+  accepted or rejected, that knowledge is scarce and valuable.
+- **Use cases.** If you're building a Swedish commerce platform, what would you
+  need for this to be usable?
+
+Non-negotiable constraints, should you send code: the core is pure (no I/O,
+async, `unsafe`, or clock reads), money is `rust_decimal` and never a float, and
+domain enums have no `_ =>` arms. See [ADR-0001](docs/adr/0001-pure-core.md) and
+[`08`](docs/08-coding-standards.md).
 
 ## Disclaimer
 
-This software produces accounting data. It is not accounting advice, and its
-authors are not accountants or tax advisers. Output must be reviewed by a
-qualified person before it is used in a filing to Skatteverket. See
-[`docs/01-problem-and-scope.md`](docs/01-problem-and-scope.md#regulatory-posture).
+Kontera produces accounting data used in filings to Skatteverket. **It is not
+accounting or tax advice, and its authors are not accountants or tax advisers.**
+Output must be reviewed by a qualified person before it's filed. Default account
+mappings and VAT rules are marked `VERIFY` until confirmed by a Swedish
+accountant; no release will be tagged before that review happens.
 
-## Licence
+## License
 
-TBD — see [`docs/07-release-engineering.md`](docs/07-release-engineering.md#licensing).
+MIT OR Apache-2.0 (pending — see
+[`07 §5`](docs/07-release-engineering.md#5-licensing)).
+
+---
+
+## På svenska
+
+**Kontera** är ett Rust-bibliotek som gör om händelser från en e-handel till
+korrekt bokföring: balanserade verifikationer på BAS-konton, moms hanterad per
+scenario, och export till SIE 4I som revisorn kan läsa in i Fortnox eller Visma.
+
+Det som saknas i dag är avstämningen mellan **order** och **utbetalning**. En
+utbetalning från Stripe eller Klarna är ett nettobelopp som slår ihop många
+ordrar minus avgifter och returer. Kontera kräver att
+`utbetalning = försäljning − returer − avgifter` stämmer, och vägrar producera
+bokföring när den inte gör det.
+
+Biblioteket är inget bokföringsprogram och ersätter inte Fortnox eller Visma. Det
+är en byggsten för den som bygger en e-handelsplattform och vill ha rätt bokföring
+i sitt eget system.
+
+*<sub>kontera (v.) — att ange vilka konton en affärshändelse ska bokföras på.</sub>*
