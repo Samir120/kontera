@@ -3,19 +3,21 @@
 # Kontera
 
 **Swedish bookkeeping as an embeddable Rust library.**
-Commerce events in — balanced BAS verifications and SIE 4I out. No database, no server.
 
-[![CI](https://github.com/swadestack/kontera/actions/workflows/ci.yml/badge.svg)](https://github.com/swadestack/kontera/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
-[![MSRV](https://img.shields.io/badge/rustc-1.XX%2B-orange)](#installation)
+Commerce events in — balanced BAS verifications and SIE 4I out.
+No database, no server.
 
-<!-- Uncomment at first publish:
-[![crates.io](https://img.shields.io/crates/v/kontera.svg)](https://crates.io/crates/kontera)
-[![docs.rs](https://docs.rs/kontera/badge.svg)](https://docs.rs/kontera)
-[![npm](https://img.shields.io/npm/v/kontera.svg)](https://www.npmjs.com/package/kontera)
--->
+![Status](https://img.shields.io/badge/status-pre--alpha-red)
+![Language](https://img.shields.io/badge/rust-2021_edition-dea584?logo=rust&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-blue)
 
 </div>
+
+<!-- Add these once the workflow and packages exist:
+[![CI](https://github.com/OWNER/kontera/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/kontera/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/kontera.svg)](https://crates.io/crates/kontera)
+[![docs.rs](https://docs.rs/kontera/badge.svg)](https://docs.rs/kontera)
+-->
 
 > [!WARNING]
 > **Pre-alpha. Nothing works yet.** The specification is complete and the
@@ -43,7 +45,7 @@ Three things go wrong, and they're all the same mistake:
 - **Timing drifts.** Sales happened Monday, cash arrived Thursday. Across a month
   boundary, the momsdeklaration is wrong.
 - **Nothing checks.** There's no assertion that
-  `payout = sales − refunds − fees`, so errors accumulate silently until someone
+  `payout = sales - refunds - fees`, so errors accumulate silently until someone
   reconciles by hand at year-end.
 
 ## What Kontera does
@@ -51,14 +53,13 @@ Three things go wrong, and they're all the same mistake:
 Converts a commerce event log into correct Swedish bookkeeping — and **refuses to
 emit output it can't prove is right**.
 
-```
-IN                        OUT
-──────────────────        ─────────────────────────
-SaleCaptured              Balanced verifications
-RefundIssued       ──►    on BAS accounts
-FeeCharged                        │
-PayoutSettled                     ▼
-+ account/VAT config      SIE 4I file (.si)
+```mermaid
+flowchart LR
+    A["SaleCaptured<br/>RefundIssued<br/>FeeCharged<br/>PayoutSettled"] --> P
+    B["Account mapping<br/>VAT profile"] --> P
+    P["post()<br/><i>pure — no I/O, no state</i>"] --> L["Balanced verifications<br/>on BAS accounts"]
+    L --> S["SIE 4I file (.si)"]
+    L --> R["VAT report<br/>Settlement summary"]
 ```
 
 ```rust
@@ -84,7 +85,7 @@ const sie    = writeSie(ledger, '2026-01-31');
 
 ### Three properties
 
-**It enforces the settlement invariant.** `payout = sales − refunds − fees`. When
+**It enforces the settlement invariant.** `payout = sales - refunds - fees`. When
 that fails you get an `Err` carrying the exact discrepancy, not a plausible
 looking wrong answer. Unbalanced verifications are unrepresentable in the type
 system — the constructor won't build one.
@@ -110,11 +111,11 @@ the merchant's accountant at year-end, that's the gap this fills.
 
 Adjacent tools each solve part of the problem:
 
-| | Embeddable | Swedish rules | Settlement-aware | Self-hosted |
-|---|:-:|:-:|:-:|:-:|
+| Tool | Embeddable | Swedish rules | Settlement-aware | Self-hosted |
+| :--- | :---: | :---: | :---: | :---: |
 | Formance, TigerBeetle, Blnk | ✅ | ❌ | ❌ | ✅ |
 | A2X, Link My Books, Synder | ❌ | ❌ | ✅ | ❌ |
-| Fortnox / Visma connectors | ❌ | ✅ | partial | ❌ |
+| Fortnox / Visma connectors | ❌ | ✅ | ⚠️ | ❌ |
 | Bigcapital | ✅ | ❌ | ❌ | ✅ |
 | **Kontera** | ✅ | ✅ | ✅ | ✅ |
 
@@ -139,13 +140,13 @@ the boundary is visible in the output instead of hidden in the books. See
 
 ## Status
 
-| Milestone | Exit criterion | |
-|---|---|:-:|
-| M1 Types & balance invariant | An unbalanced verification can't be constructed | ⬜ |
-| M2 VAT & posting rules | The worked example produces the exact posting table | ⬜ |
-| M3 SIE 4I & acceptance | A `.si` imports into Fortnox untouched, incl. `å ä ö` | ⬜ |
-| M4 Settlement & CLI | A tampered payout always errors with a useful delta | ⬜ |
-| M5 WASM, npm, first host | A real shop produces a month's SIE via `npm install` | ⬜ |
+| Milestone | Exit criterion | Status |
+| :--- | :--- | :--- |
+| **M1** Types & balance invariant | An unbalanced verification cannot be constructed | Not started |
+| **M2** VAT & posting rules | The worked example produces the exact posting table | Not started |
+| **M3** SIE 4I & acceptance | A `.si` imports into Fortnox untouched, incl. `å ä ö` | Not started |
+| **M4** Settlement & CLI | A tampered payout always errors with a useful delta | Not started |
+| **M5** WASM, npm, first host | A real shop produces a month's SIE via `npm install` | Not started |
 
 M3 is the real gate. If a commercial Swedish system won't import the output,
 nothing else matters. Full plan in [`docs/06-roadmap.md`](docs/06-roadmap.md).
@@ -169,8 +170,8 @@ npm install kontera   # WASM build, no native toolchain required
 
 The specification is written and binding — worth reading before the code exists.
 
-| | |
-|---|---|
+| Document | Covers |
+| :--- | :--- |
 | [Problem & Scope](docs/01-problem-and-scope.md) | The problem, non-goals, success criteria |
 | [Domain Model](docs/02-domain-model.md) | BAS mapping, VAT scenarios, invariants, glossary |
 | [Architecture](docs/03-architecture.md) | Crate layout, the purity boundary, integration shapes |
@@ -222,7 +223,7 @@ scenario, och export till SIE 4I som revisorn kan läsa in i Fortnox eller Visma
 Det som saknas i dag är avstämningen mellan **order** och **utbetalning**. En
 utbetalning från Stripe eller Klarna är ett nettobelopp som slår ihop många
 ordrar minus avgifter och returer. Kontera kräver att
-`utbetalning = försäljning − returer − avgifter` stämmer, och vägrar producera
+`utbetalning = försäljning - returer - avgifter` stämmer, och vägrar producera
 bokföring när den inte gör det.
 
 Biblioteket är inget bokföringsprogram och ersätter inte Fortnox eller Visma. Det
