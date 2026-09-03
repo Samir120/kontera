@@ -1,0 +1,28 @@
+# Normalise everything to LF in the repository.
+* text=auto eol=lf
+
+# ---- SIE files are NOT text ----
+# SIE 4I output is CP437-encoded (ADR-0003). Git's text handling would
+# apply encoding and line-ending normalisation to it, silently corrupting
+# the golden files that docs/05-testing-strategy.md compares byte-for-byte.
+# Treating them as binary disables all of that.
+#
+# The SIE specification uses CRLF line endings — another reason these must
+# not be normalised to LF along with everything else.
+*.si  binary
+*.se  binary
+
+# ---- Language hints for GitHub ----
+*.rs      text diff=rust
+*.toml    text
+*.md      text diff=markdown
+*.jsonl   text
+*.sh      text eol=lf
+
+# Generated — excluded from diffs and from language statistics
+crates/kontera-wasm/pkg/**  linguist-generated=true
+npm/pkg/**                  linguist-generated=true
+Cargo.lock                  linguist-generated=true -diff
+
+# Fixtures are data, not source
+fixtures/**  linguist-vendored=true

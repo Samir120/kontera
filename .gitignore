@@ -1,0 +1,77 @@
+# ---- Rust ----
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS committed, deliberately.
+# Since 2023 the Cargo book recommends committing it for libraries too:
+# it makes CI reproducible and makes `cargo audit` results meaningful.
+# Do not add Cargo.lock here.
+
+# ---- Fuzzing ----
+fuzz/target/
+fuzz/artifacts/
+# fuzz/corpus/ IS committed — see docs/05-testing-strategy.md §4
+
+# ---- Coverage ----
+*.profraw
+*.profdata
+lcov.info
+coverage/
+tarpaulin-report.*
+
+# ---- WASM / npm ----
+node_modules/
+crates/kontera-wasm/pkg/
+npm/pkg/
+npm/dist/
+*.tgz
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---- Secrets and credentials ----
+# CI publishes to crates.io and npm with scoped tokens (07 §6).
+# Nothing token-shaped belongs in the repo.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.npmrc
+credentials.toml
+
+# ---- Generated SIE output ----
+# Golden fixtures are committed; anything generated at runtime is not.
+*.si
+*.se
+!fixtures/**/*.si
+!fixtures/**/*.se
+/out/
+
+# ---- Real merchant data ----
+# Event logs from a live shop contain order and buyer data, and are
+# räkenskapsinformation belonging to the merchant — not to this repo.
+# Keep experiments with real data in /local/, which is never tracked.
+/local/
+/scratch/
+*.real.jsonl
+*.private.toml
+
+# ---- Editor ----
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.netrwhist
+Session.vim
+.direnv/
+.envrc
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
