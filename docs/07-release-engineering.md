@@ -126,7 +126,8 @@ named after the project itself.
 
 ## 5. Licensing
 
-Unresolved (**Q5**). The trade-off:
+**Resolved 2026-09-04: MIT OR Apache-2.0.** `LICENSE-MIT` and `LICENSE-APACHE`
+are in the repo root. The trade-off that was weighed:
 
 | Option | Effect |
 |---|---|

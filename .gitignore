@@ -58,6 +58,12 @@ credentials.toml
 *.real.jsonl
 *.private.toml
 
+# ---- Claude Project working files ----
+# These live in the Claude Project (Instructions field + Context), not in
+# the public repo. Kept locally beside the code, never pushed.
+/STATE.md
+/PROJECT-INSTRUCTIONS.md
+
 # ---- Editor ----
 .idea/
 .vscode/*

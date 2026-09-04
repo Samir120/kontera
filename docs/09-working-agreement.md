@@ -162,10 +162,15 @@ Because Claude cannot read the repo:
 
 | Artifact | Home | Updated |
 |---|---|---|
-| Project instructions | Claude Project settings | Re-paste when `PROJECT-INSTRUCTIONS.md` changes |
-| Specification (`docs/01`–`09`, ADRs) | Project knowledge + repo | On decision changes |
-| `STATE.md` | Project knowledge + repo | Every session |
+| `PROJECT-INSTRUCTIONS.md` | Claude Project **Instructions** field. Local copy beside the repo, git-ignored | Re-paste when it changes |
+| `STATE.md` | Claude Project **Context**. Local copy beside the repo, git-ignored | Every session |
+| Specification (`docs/01`–`09`, ADRs) | Repo (public) + Claude Project Context | On decision changes |
 | Source code | Repo only | Pasted into chat as needed |
+
+`STATE.md` and `PROJECT-INSTRUCTIONS.md` are working documents for the
+Claude-assisted process, not part of the specification, and are deliberately
+kept out of the public repository. The `.gitignore` enforces this. Keep the
+local copies backed up — they have no git history.
 
 **Source code does not go into project knowledge.** It changes every session, and
 a stale copy in knowledge is worse than none — Claude would reason about code

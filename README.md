@@ -7,9 +7,9 @@
 Commerce events in — balanced BAS verifications and SIE 4I out.
 No database, no server.
 
-![Status](https://img.shields.io/badge/status-pre--alpha-red)
-![Language](https://img.shields.io/badge/rust-2021_edition-dea584?logo=rust&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-blue)
+[![Status](https://img.shields.io/badge/status-pre--alpha-red)](docs/06-roadmap.md)
+[![Rust](https://img.shields.io/badge/rust-stable-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-blue)](#license)
 
 </div>
 
@@ -23,6 +23,21 @@ No database, no server.
 > **Pre-alpha. Nothing works yet.** The specification is complete and the
 > implementation has not started. Watch the repo if the idea is useful to you;
 > don't depend on it.
+
+**Contents** ·
+[Problem](#the-problem) ·
+[What it does](#what-kontera-does) ·
+[Who it's for](#who-its-for) ·
+[Why it doesn't exist](#why-this-doesnt-already-exist) ·
+[Scope](#scope) ·
+[Status](#status) ·
+[Install](#installation) ·
+[Docs](#documentation) ·
+[Contributing](#contributing) ·
+[Disclaimer](#disclaimer) ·
+[Security](#security) ·
+[License](#license) ·
+[På svenska](#på-svenska)
 
 ---
 
@@ -61,6 +76,8 @@ flowchart LR
     L --> S["SIE 4I file (.si)"]
     L --> R["VAT report<br/>Settlement summary"]
 ```
+
+The target API — this is what v0.1 will look like, not what runs today:
 
 ```rust
 use kontera::{post, Config, Event};
@@ -207,10 +224,31 @@ Output must be reviewed by a qualified person before it's filed. Default account
 mappings and VAT rules are marked `VERIFY` until confirmed by a Swedish
 accountant; no release will be tagged before that review happens.
 
+## Security
+
+Kontera has no network surface and no persistence. Its attack surface is the
+deserialisation of an event log supplied by the host, which is why `post()` is
+required never to panic and why the deserialiser is fuzzed nightly.
+
+If you find a vulnerability, please use
+[GitHub's private vulnerability reporting](../../security/advisories/new)
+rather than a public issue. Accounting bugs — a wrong posting, a VAT scenario
+mishandled — are not security issues; open a normal issue for those.
+
 ## License
 
-MIT OR Apache-2.0 (pending — see
-[`07 §5`](docs/07-release-engineering.md#5-licensing)).
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
 
 ---
 
