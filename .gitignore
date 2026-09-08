@@ -81,3 +81,6 @@ Session.vim
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- tags ----
+.tags
