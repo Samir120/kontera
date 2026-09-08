@@ -66,9 +66,6 @@ credentials.toml
 
 # ---- Editor ----
 .idea/
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
 *.swp
 *.swo
 *~
