@@ -1,0 +1,16 @@
+[package]
+name        = "kontera-testkit"
+description = "Property-test generators shared across Kontera test crates. Never published."
+publish     = false
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+
+[dependencies]
+kontera-core    = { workspace = true }
+rust_decimal    = { workspace = true }
+chrono          = { workspace = true }
+proptest        = { workspace = true }

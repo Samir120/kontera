@@ -1,0 +1,18 @@
+[package]
+name        = "kontera-cli"
+description = "Command-line interface for kontera: replay an event log, validate it, write SIE 4I."
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+
+[[bin]]
+name = "kontera"
+path = "src/main.rs"
+
+[dependencies]
+kontera-core    = { workspace = true }
+kontera-sie     = { workspace = true }
+anyhow          = { workspace = true }

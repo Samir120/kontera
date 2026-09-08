@@ -1,0 +1,17 @@
+[package]
+name        = "kontera-wasm"
+description = "wasm-bindgen bindings for kontera, published to npm rather than crates.io."
+publish     = false
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace        = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kontera-core    = { workspace =  true }
+kontera-sie     = { workspace = true }

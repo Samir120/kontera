@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kontera-core",
+    "crates/kontera-sie",
+    "crates/kontera-testkit",
+    "crates/kontera-cli",
+    "crates/kontera-wasm",
+]
+
+[workspace.package]
+version         = "0.1.0"
+edition         = "2021"
+rust-version    = "1.90"
+license         = "MIT OR Apache-2.0"
+repository      = "https://github.com/Samir120/kontera"
+authors         = ["Samir"]
+
+[workspace.dependencies]
+rust_decimal = { version = "1.43", default-features = false, features = ["std", "serde-with-str"] }
+serde        = { version = "1.0", default-features = false, features = ["std", "derive"] }
+chrono       = { version = "0.4", default-features = false, features = ["serde"] }
+thiserror = "2.0"
+
+proptest = "1.11"
+
+anyhow = "1.0"
+
+kontera-core = { path = "crates/kontera-core", version = "0.1.0" }
+kontera-sie = { path = "crates/kontera-sie", version = "0.1.0" }
+kontera-testkit = { path = "crates/kontera-testkit" }
