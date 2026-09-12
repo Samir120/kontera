@@ -1,6 +1,6 @@
 [package]
 name        = "kontera-sie"
-description = "SIE 4I writer for kontera ledgers. CP437-encoded bytes, per 0003-sie-output.md."
+description = "SIE 4I writer for kontera ledgers. CP437-encoded bytes, per 0003-sie-4i-output.md."
 version.workspace       = true
 edition.workspace       = true
 rust-version.workspace  = true
