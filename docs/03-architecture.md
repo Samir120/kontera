@@ -96,9 +96,6 @@ itself. The feature-flag approach puts test scaffolding in the shipped crate's
 public surface, which is exactly the kind of thing that later gets depended on by
 accident. A separate crate, never published, keeps the boundary clean.
 
-> **Decide in T1.** If the generator ends up used only by `kontera-core`,
-> `tests/common/mod.rs` is lighter and this crate should be dropped.
-
 ### 3.2 Why `kontera-sie` is separate
 
 SIE needs CP437 encoding, which means a dependency. `kontera-core` should stay

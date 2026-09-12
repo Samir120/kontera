@@ -63,24 +63,61 @@ enforced mechanically rather than by discipline:
 
 ```bash
 #!/usr/bin/env bash
+# scripts/check-purity.sh
+#
+# Mechanical enforcement of the purity boundary from ADR-0001 and docs/03 §8.
+# Crude by design: it runs in under a second and catches exactly the
+# regressions that break determinism. An occasional false positive on a comment
+# is an acceptable price. See docs/07 §3.1.
+
 set -euo pipefail
+
+CORE=crates/kontera-core/src
+SIE=crates/kontera-sie/src
+
 fail=0
-check() {  # pattern, message
-  if grep -rn "$1" crates/kontera-core/src crates/kontera-sie/src; then
-    echo "PURITY VIOLATION: $2"; fail=1
+
+# check <pattern> <message> <path...>
+check() {
+  local pattern="$1"; shift
+  local message="$1"; shift
+  local hits
+  if hits=$(grep -rnE "$pattern" "$@" 2>/dev/null); then
+    echo "PURITY VIOLATION: $message"
+    echo "$hits"
+    echo
+    fail=1
   fi
 }
-check 'SystemTime::now\|Utc::now\|Local::now' 'clock read in a pure crate'
-check 'std::fs\|std::net\|tokio\|async fn'    'I/O or async in a pure crate'
-check 'unsafe '                               'unsafe in a pure crate'
-grep -rn 'HashMap' crates/kontera-core/src/ledger.rs crates/kontera-sie/src \
-  && { echo 'PURITY VIOLATION: HashMap in an output path'; fail=1; }
-exit $fail
+
+check 'SystemTime::now|Utc::now|Local::now|Instant::now' \
+      'clock read in a pure crate — dates are parameters (docs/08 §10)' \
+      "$CORE" "$SIE"
+
+check 'std::fs|std::net|tokio|async fn|\.await' \
+      'I/O or async in a pure crate (ADR-0001)' \
+      "$CORE" "$SIE"
+
+check 'unsafe[[:space:]]' \
+      'unsafe in a pure crate' \
+      "$CORE" "$SIE"
+
+check 'HashMap|HashSet' \
+      'hash container in an output path — use BTreeMap/BTreeSet (docs/03 §4.2)' \
+      "$CORE/ledger.rs" "$SIE"
+
+if [ "$fail" -eq 0 ]; then
+  echo "purity: ok"
+fi
+
+exit "$fail"
 ```
 
 Crude, and it will produce the occasional false positive on a comment. That is an
 acceptable trade for a check that runs in under a second and catches the exact
 regressions that break determinism.
+
+The script is invoked by path in CI, so it must be commited with mode `100755`. A local `chmod +x` does not travel — record it in git with `git update-index --chmod=+x script/check-purity.sh`, and verify `git ls-files -s`.
 
 ### 3.2 MSRV
 
