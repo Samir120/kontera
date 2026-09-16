@@ -17,12 +17,12 @@ use std::str::FromStr;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Every `Money` has exactly this many decimal palces: öre.
+/// Every `Money` has exactly this many decimal places: öre.
 const SCALE: u32 = 2;
 
 /// The currency a [`Money`] is denominated in.
 ///
-/// v0.1 is SEK-only (docs/01 §4). The tag exist so that a second currency is
+/// v0.1 is SEK-only (docs/01 §4). The tag exists so that a second currency is
 /// a change here plus every exhaustive `match` the compiler then lists — not a
 /// search through the codebase. Never add a wildcard arm over it (docs/08 §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,25 +64,25 @@ pub struct Money {
     currency: Currency,
 }
 
-// Why a decimal or string could not become a [`Money`].
+/// Why a decimal or string could not become a [`Money`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MoneyError {
-    /// Not of the form `-?digits[.digits]`, e.g. `"1000.000"`.
-    #[error("`{input}` is not a plain decimal amount; expected the form \"1000.000\"")]
+    /// Not of the form `-?digits[.digits]`, e.g. `"1000.00"`.
+    #[error("`{input}` is not a plain decimal amount; expected the form \"1000.00\"")]
     Syntax {
-        /// The reject input, verbatim.
+        /// The rejected input, verbatim.
         input: String,
     },
-    /// More decimal palces than äre can hold without roundingg.
-    #[error("`{input}` ahs {scale} decimal places; öre precision allows at most 2")]
+    /// More decimal places than öre can hold without rounding.
+    #[error("`{input}` has {scale} decimal places; öre precision allows at most 2")]
     TooPrecise {
         /// The rejected input, verbatim.
         input: String,
-        /// Decimal palces the input actually needs.
+        /// Decimal places the input actually needs.
         scale: u32,
     },
     /// Outside `±92 233 720 368 547 758.07` (`i64` öre).
-    #[error("`{input}` is outside the representation range of ±i64 öre")]
+    #[error("`{input}` is outside the representable range of ±i64 öre")]
     OutOfRange {
         /// The rejected input, verbatim.
         input: String,
@@ -96,7 +96,7 @@ impl Money {
         currency: Currency::Sek,
     };
 
-    /// Exact öre, no rounding. The constructor for  tests and fixtures.
+    /// Exact öre, no rounding. The constructor for tests and fixtures.
     #[must_use]
     pub fn from_ore(ore: i64) -> Money {
         // `SCALE` is far below `Decimal::MAX_SCALE`, so `new` cannot panic.
@@ -140,6 +140,7 @@ impl Money {
         self.currency
     }
 
+    /// The amount in öre. `i128` because sums may exceed what enters.
     #[must_use]
     pub const fn ore(self) -> i128 {
         self.amount.mantissa()
@@ -177,7 +178,7 @@ impl Money {
     fn bounded(d: Decimal) -> Option<Money> {
         let m = Money::normalised(d);
         // `rescale` refuses to widen past 96 bits and silently keeps a smaller
-        // scale isntead, so the scale check is not redundant with the range check.
+        // scale instead, so the scale check is not redundant with the range check.
         (m.amount.scale() == SCALE && i64::try_from(m.amount.mantissa()).is_ok()).then_some(m)
     }
 
@@ -196,9 +197,9 @@ impl Money {
     }
 }
 
-/// `-?digit[.digits]`, ASCII only. The grammar of docs/04 §2 amounts.
+/// `-?digits[.digits]`, ASCII only. The grammar of docs/04 §2 amounts.
 fn is_plain_decimal(s: &str) -> bool {
-    let unsigned = s.strip_prefix('_').unwrap_or(s);
+    let unsigned = s.strip_prefix('-').unwrap_or(s);
     let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
     match unsigned.split_once('.') {
         Some((int, frac)) => all_digits(int) && all_digits(frac),
@@ -232,7 +233,13 @@ impl TryFrom<Decimal> for Money {
     }
 }
 
-/// Bare amount, two decimals, `.` separotor, `-` for credit balances:
+impl From<Money> for Decimal {
+    fn from(m: Money) -> Decimal {
+        m.amount
+    }
+}
+
+/// Bare amount, two decimals, `.` separator, `-` for credit balances:
 /// `"1234.56"`. No currency — this is the SIE `#TRANS` form.
 impl fmt::Display for Money {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -299,10 +306,17 @@ impl<'a> Sum<&'a Money> for Money {
 
 #[cfg(test)]
 mod tests {
+    // Tests are the one place `unwrap()` is right: a wrong `Err` here is a test
+    // failure, which is the point. The crate-level deny still holds for library code.
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn sek(ore: i64) -> Money {
         Money::from_ore(ore)
+    }
+
+    fn kr(s: &str) -> Money {
+        Money::parse(s).unwrap()
     }
 
     fn dec(mantissa: i64, scale: u32) -> Decimal {
@@ -315,14 +329,14 @@ mod tests {
         assert_eq!(Money::parse("1000"), Ok(sek(100_000)));
         assert_eq!(Money::parse("0.5"), Ok(sek(50)));
         assert_eq!(Money::parse("-0.50"), Ok(sek(-50)));
-        assert_eq!(Money::parse("1000.500"), Ok(sek(1000_050)));
+        assert_eq!(Money::parse("1000.500"), Ok(sek(100_050)));
         assert_eq!(Money::parse("-0.00"), Ok(Money::ZERO));
     }
 
     #[test]
     fn parse_rejects_anything_but_the_wire_form() {
         for s in [
-            "", "-", ".", "1.", ".5", ".5", "+1.00", " 1.00", "1.00", "1,00.00", "1_000.00", "1e3",
+            "", "-", ".", "1.", ".5", "+1.00", " 1.00", "1.00 ", "1,000.00", "1_000.00", "1e3",
             "abc", "1.0.0",
         ] {
             assert_eq!(
@@ -356,7 +370,7 @@ mod tests {
                 Err(MoneyError::OutOfRange {
                     input: s.to_owned()
                 }),
-                "{s.?}"
+                "{s:?}"
             );
         }
     }
@@ -374,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn rounded_is_half_away_zero() {
+    fn rounded_is_half_away_from_zero() {
         assert_eq!(Money::rounded(dec(125, 3)), Ok(sek(13)));
         assert_eq!(Money::rounded(dec(-125, 3)), Ok(sek(-13)));
         assert_eq!(Money::rounded(dec(124, 3)), Ok(sek(12)));
@@ -399,13 +413,15 @@ mod tests {
 
     #[test]
     fn worked_example_from_docs_01_ties_out() {
-        let vat = Money::rounded(dec(40_000_00, 2) * dec(25, 2)).unwrap();
-        assert_eq!(vat, sek(10_000_00));
+        // 40 000 kr excl. moms at 25 %.
+        let vat = Money::rounded(Decimal::from(kr("40000.00")) * dec(25, 2)).unwrap();
+        assert_eq!(vat, kr("10000.00"));
+        // Account 1580 after the payout: sales − refunds − fees − payout.
         let clearing = [
-            sek(50_000_00),
-            sek(-1_000_00),
-            sek(-1_168_00),
-            sek(-47_832_00),
+            kr("50000.00"),
+            -kr("1000.00"),
+            -kr("1168.00"),
+            -kr("47832.00"),
         ];
         assert_eq!(clearing.iter().sum::<Money>(), Money::ZERO);
     }
@@ -448,7 +464,7 @@ mod tests {
     fn serde_is_string_only() {
         assert_eq!(
             serde_json::to_string(&sek(123_456)).unwrap(),
-            r#""1235.56""#
+            r#""1234.56""#
         );
         assert_eq!(
             serde_json::from_str::<Money>(r#""1234.56""#).unwrap(),
@@ -458,7 +474,7 @@ mod tests {
             serde_json::from_str::<Money>("1234.56").is_err(),
             "a JSON number is a float"
         );
-        assert_eq!(serde_json::from_str::<Money>(r#""1234.567""#).is_err());
-        assert_eq!(serde_json::from_str::<Money>(r#""1_234.56""#).is_err());
+        assert!(serde_json::from_str::<Money>(r#""1234.567""#).is_err());
+        assert!(serde_json::from_str::<Money>(r#""1_234.56""#).is_err());
     }
 }

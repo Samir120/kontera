@@ -23,6 +23,7 @@ chrono       = { version = "0.4", default-features = false, features = ["serde"]
 thiserror = "2.0"
 
 proptest = "1.11"
+serde_json = "1.0"
 
 anyhow = "1.0"
 

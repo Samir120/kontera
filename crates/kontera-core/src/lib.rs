@@ -8,9 +8,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::pedantic)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-// Exhaustive matching on domain enums is a compliance mechanism, not a style
+// Exahustive matching on domain enum is a compliance mechanism, not a style
 // rule: a wildcard arm turns "a new VAT scenario wad added" from a build
-// failure into a silently wrong momsdeklaration. See docs/08 §6.
+// failure into a silently wrong momskelaration. See docs/08 §6.
 #![deny(clippy::wildcard_enum_match_arm)]
 
 mod account;
@@ -24,6 +24,8 @@ mod settle;
 mod vat;
 mod verification;
 
-// Public re-exports land here as each is filled in. `post()`is written
-// in M2 once rules and settle exist; declaring it now would be a signature
-// invented ahead of the types it depends on.
+pub use money::{Currency, Money, MoneyError};
+
+// Further re-exports land here as each module is filled in. `post()` is
+// written in M2 once rules and settle exist; declaring it now would be a
+// signature invented ahead of the types it depends on.
