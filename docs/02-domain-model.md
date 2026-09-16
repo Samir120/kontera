@@ -45,11 +45,22 @@ in this table may appear as an identifier.
 `Money` wraps `rust_decimal::Decimal`. Never `f64`. See
 [ADR-0002](adr/0002-decimal-money.md).
 
-- Scale: 2 (öre)
+- Scale: 2 (öre), always. Zero is never negative
 - Currency: SEK only in v0.1, but the type carries a currency tag so adding
   others later is a change in one place rather than everywhere
 - Rounding: half-away-from-zero at the line level, then summed. Never sum then
   round — the two differ and only one matches what a merchant's checkout did
+- Two ways in, deliberately distinct: `Money::parse` and `TryFrom<Decimal>`
+  accept only amounts already exact in öre and fail closed on anything that
+  would need rounding; `Money::rounded` is the one place in the crate where a
+  computed decimal is rounded
+- Range: every amount that enters through a constructor fits in `i64` öre
+  (±92 233 720 368 547 758.07). `Decimal` panics on overflow, and this bound
+  is what makes `+`, `-` and `sum()` total without checked arithmetic — a sum
+  of bounded values needs more than eight billion operands to overflow. Sums
+  may exceed `i64` öre, so `Money::ore()` returns `i128`
+- Wire form is a JSON string in the grammar `-?digits[.digits]`. A JSON number
+  is rejected at deserialisation, not coerced
 
 ### 2.2 Account
 

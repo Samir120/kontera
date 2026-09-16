@@ -224,6 +224,9 @@ Anything else needs a justification in the PR. Every dependency is code a future
 auditor has to read and a supply-chain surface this project doesn't control.
 When in doubt, write the twenty lines.
 
+Dev-dependencies (`proptest`, `serde_json`, `kontera-testkit`) are not subject
+to this list; they never ship. They still need a reason.
+
 ## 14. Formatting and lints
 
 Default `rustfmt`. No custom `rustfmt.toml` — arguing about formatting is time

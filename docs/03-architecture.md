@@ -232,6 +232,10 @@ built unless a .NET host actually requires it. Do not build it speculatively.
 Additions require a note in the PR explaining why. Every dependency is something
 a future auditor has to read.
 
+Dev-dependencies are outside that list — they are not in the shipped crate's
+tree. Current: `proptest`, `serde_json` (JSON-boundary tests and, later, the
+fuzz targets), `kontera-testkit`.
+
 `kontera-core` may not: perform I/O, use `async`, use `unsafe`, call
 `SystemTime::now()`, or panic on any input reachable from `post()`.
 
