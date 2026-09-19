@@ -1,16 +1,16 @@
 //! Swedish bookkeeping as a pure function
 //!
-//! `kontera-core` folds a commerce event log into balanced verification on BAS
-//! accounts. It performs no I/O, holds no state, reads no clock, and spawn no
-//! tasks - see `docs/adr/0001-pure-core.md`. Deteminism is a correctness
-//! requirement here, not a preference: golden test compare bytes.
+//! `kontera-core` folds a commerce event log into balanced verifications on BAS
+//! accounts. It performs no I/O, holds no state, reads no clock, and spawns no
+//! tasks - see `docs/adr/0001-pure-core.md`. Determinism is a correctness
+//! requirement here, not a preference: golden tests compare bytes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::pedantic)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-// Exahustive matching on domain enum is a compliance mechanism, not a style
-// rule: a wildcard arm turns "a new VAT scenario wad added" from a build
-// failure into a silently wrong momskelaration. See docs/08 §6.
+// Exhaustive matching on domain enums is a compliance mechanism, not a style
+// rule: a wildcard arm turns "a new VAT scenario was added" from a build
+// failure into a silently wrong momsdeklaration. See docs/08 §6.
 #![deny(clippy::wildcard_enum_match_arm)]
 
 mod account;
@@ -24,6 +24,7 @@ mod settle;
 mod vat;
 mod verification;
 
+pub use account::{AccountError, AccountKind, AccountNumber};
 pub use money::{Currency, Money, MoneyError};
 
 // Further re-exports land here as each module is filled in. `post()` is
