@@ -65,13 +65,31 @@ in this table may appear as an identifier.
 ### 2.2 Account
 
 ```
-Account { number: AccountNumber, kind: AccountKind }
 AccountNumber: 4 digits, 1000–8999
-AccountKind:   Asset | Liability | Equity | Income | Expense
+AccountKind:   Asset | EquityAndLiability | Income | Expense | FinancialItem
 ```
 
 BAS classes: 1xxx assets, 2xxx liabilities and equity, 3xxx income,
 4xxx–7xxx expenses, 8xxx financial items.
+
+- `AccountKind` is exactly what the class digit proves, and nothing more.
+  Class 2 is not split into equity and liabilities, and class 8 is not split
+  into income and expense: both splits need sub-range boundaries the first
+  digit cannot prove, and nothing in v0.1 consumes them. If a consumer appears,
+  the split arrives as a sourced range table marked **VERIFY**
+- `AccountNumber::class()` is infallible and is the only source of an
+  account's kind. There is deliberately no `Account { number, kind }` struct:
+  the kind is derivable from the number, so a struct holding both could
+  represent `1930` as `Income`. An `Account` type returns when it has something
+  non-derivable to carry, such as the name for a SIE `#KONTO` record
+- Two ways in: `AccountNumber::parse` (exactly four ASCII digits) and
+  `TryFrom<u16>`. Both fail closed with `AccountError { Syntax, OutOfRange }`,
+  carrying the rejected input
+- Wire form is a string (`"1930"`), matching the config schema in
+  [04 §3](04-public-api.md). An integer is rejected at deserialisation: an
+  account number is an identifier, not a quantity
+- Ordering is numeric. This is the order a `BTreeMap` keyed on accounts
+  iterates in, and therefore the order accounts reach output
 
 ### 2.3 Verification and BalancedTransaction
 

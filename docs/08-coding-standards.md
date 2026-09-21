@@ -45,8 +45,8 @@ nothing re-checks.
 pub struct AccountNumber(u16);          // private field
 
 impl AccountNumber {
-    pub fn parse(s: &str) -> Result<Self, ParseError> { … }   // 1000–8999
-    pub fn class(&self) -> AccountKind { … }                  // infallible
+    pub fn parse(s: &str) -> Result<Self, AccountError> { … }  // 1000–8999
+    pub fn class(&self) -> AccountKind { … }                   // infallible
 }
 ```
 
