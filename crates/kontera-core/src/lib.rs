@@ -26,6 +26,7 @@ mod verification;
 
 pub use account::{AccountError, AccountKind, AccountNumber};
 pub use money::{Currency, Money, MoneyError};
+pub use verification::{BalancedTransaction, Line, Series, Verification, VerificationError};
 
 // Further re-exports land here as each module is filled in. `post()` is
 // written in M2 once rules and settle exist; declaring it now would be a

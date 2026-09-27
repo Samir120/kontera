@@ -94,22 +94,41 @@ BAS classes: 1xxx assets, 2xxx liabilities and equity, 3xxx income,
 ### 2.3 Verification and BalancedTransaction
 
 ```
+Line { account: AccountNumber, amount: Money }   // debit +, credit −
+
+BalancedTransaction { lines: Vec<Line> }         // private field, private ctor
+
+Series(char)                                     // exactly one ASCII capital, "A"
+
 Verification {
-    series:  Series,            // 'A'
-    number:  u32,               // sequential, unbroken
-    date:    NaiveDate,         // transaction date
-    text:    String,            // description
-    posted:  NaiveDate,         // when compiled
-    lines:   Vec<Line>,
+    series:      Series,
+    number:      u32,                // sequential, unbroken — I4, assigned by the ledger builder
+    date:        NaiveDate,          // transaction date (SIE verdatum)
+    text:        String,             // description (SIE vertext)
+    posted:      NaiveDate,          // when compiled (SIE regdatum); a parameter, never the clock
+    transaction: BalancedTransaction,
 }
-Line { account: AccountNumber, amount: Money }  // debit +, credit −
 ```
 
-**Invariant:** `lines.iter().map(|l| l.amount).sum() == Money::ZERO`.
+**Invariant:** `transaction.lines().iter().map(|l| l.amount).sum() == Money::ZERO`,
+and the line set is non-empty.
 
-This is enforced by a private constructor on `BalancedTransaction` that returns
-`Err` unless the sum is zero. An unbalanced verification cannot exist as a value
-in this system. That single design choice is the reason for the type system.
+`BalancedTransaction::new(lines)` is the only constructor. It returns
+`Err(VerificationError::Unbalanced { debit, credit })` unless the sum is zero,
+and `Err(VerificationError::Empty)` for no lines at all — an empty sum is zero,
+but a `#VER` with no `#TRANS` documents no business event. An unbalanced
+verification cannot exist as a value in this system. That single design choice
+is the reason for the type system.
+
+Line order is preserved as given and is part of the output: the rule that built
+the lines decides it. The worked example in [01 §1.1](01-problem-and-scope.md)
+lists 1580 before 3001, not account-number order.
+
+`Verification` itself is plain data with public fields. The invariant a type can
+carry is carried by `BalancedTransaction`; **I4** is a property of the sequence
+and lives in the ledger builder. `Series` is strict — one ASCII capital letter,
+matching the config form `"A"` — and widens only with evidence from the week-6
+import (**Q4**). `VerificationError` nests into `PostingError` via `#[from]`.
 
 ### 2.4 Immutability
 
