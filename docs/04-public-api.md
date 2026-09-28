@@ -157,12 +157,23 @@ at validation time, not a silent fallback.
 Errors are the product. Each must say what was wrong, which event, and what a
 human should do.
 
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum PostingError {
-    #[error("verification would not balance: debit {debit}, credit {credit}")]
-    Unbalanced { debit: Money, credit: Money },
+`PostingError` is the one error type `post()` returns. It has two kinds of
+variant: **nesting** variants that wrap a module's own error enum via
+`#[from]` and forward `Display`/`source()` transparently, and **leaf**
+variants that carry the data of a failure only the fold can detect.
 
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PostingError {
+    // ── nesting: one per module that has its own error enum ──────────────
+    #[error(transparent)]
+    Money(#[from] MoneyError),                 // Syntax | TooPrecise | OutOfRange
+    #[error(transparent)]
+    Account(#[from] AccountError),             // Syntax | OutOfRange
+    #[error(transparent)]
+    Verification(#[from] VerificationError),   // Unbalanced | Empty | InvalidSeries
+
+    // ── leaf: added with the code that first returns each ────────────────
     #[error("settlement {payout} does not reconcile: expected {expected}, \
              provider reported {actual}, difference {delta}")]
     SettlementMismatch {
@@ -188,6 +199,12 @@ pub enum PostingError {
     OutsidePeriod { event: EventId, at: NaiveDate, start: NaiveDate, end: NaiveDate },
 }
 ```
+
+The nesting variants exist as of M1. Each leaf variant lands together with the
+code that first returns it and a test that produces it — a variant nothing
+constructs is untestable beyond its message. `Unbalanced` lives in
+`VerificationError`, not at the top level: the private constructor is where it
+is detected, so that is where it is defined.
 
 `SettlementMismatch` carries `delta` deliberately — that number is the first
 thing a human needs, and it is usually a fee the host forgot to emit.

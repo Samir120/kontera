@@ -25,6 +25,7 @@ mod vat;
 mod verification;
 
 pub use account::{AccountError, AccountKind, AccountNumber};
+pub use error::PostingError;
 pub use money::{Currency, Money, MoneyError};
 pub use verification::{BalancedTransaction, Line, Series, Verification, VerificationError};
 
