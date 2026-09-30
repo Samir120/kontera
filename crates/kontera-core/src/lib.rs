@@ -26,6 +26,10 @@ mod verification;
 
 pub use account::{AccountError, AccountKind, AccountNumber};
 pub use error::PostingError;
+pub use event::{
+    CountryCode, EventError, EventId, FeeKind, ProviderId, SupplyKind, VatNumber, VatRate,
+    EVENT_SCHEMA_VERSION,
+};
 pub use money::{Currency, Money, MoneyError};
 pub use verification::{BalancedTransaction, Line, Series, Verification, VerificationError};
 
