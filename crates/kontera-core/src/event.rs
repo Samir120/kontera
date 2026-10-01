@@ -9,11 +9,18 @@
 //! membership test against an ISO list, and a [`VatNumber`] is non-empty, not
 //! VIES-validated. Both of those are the host's job (docs/04 §2.1); what the
 //! crate proves is that the value is not garbage.
+//!
+//! Two amounts carry a sign constraint — a sale line is never negative, a fee
+//! is strictly positive — and each is the one private field of its struct, so
+//! the constructor is the only way in and a JSON goes through it too.
 
 use std::fmt;
 use std::str::FromStr;
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::money::Money;
 
 /// The version of the event schema this crate reads and writes.
 ///
@@ -51,6 +58,24 @@ pub enum EventError {
     InvalidVatNumber {
         /// The rejected input, verbatim.
         input: String,
+    },
+    /// A sale line's net amount must not be negative. A negative line is a
+    /// refund, and refund are their own event.
+    #[error("sale line `{description}` has negative amount {amount}; a refund is its own event")]
+    NegativeLineAmount {
+        /// The line's description, for locating it.
+        description: String,
+        /// The rejected amount.
+        amount: Money,
+    },
+    /// A fee must be strictly positive. A provider crediting a fee back is a
+    /// scenario v0.1 does not model.
+    #[error("fee {event} has amount {amount}; a fee must be positive")]
+    NonPositiveFee {
+        /// The fee event's id.
+        event: EventId,
+        /// The rejected amount.
+        amount: Money,
     },
 }
 
@@ -356,12 +381,283 @@ pub enum FeeKind {
     Other,
 }
 
+/// How the buyer is treated for VAT (docs/04 §2).
+///
+/// Wire form is tagged `kind`: `{"kind":"consumer"}` or
+/// `{"kind":"business", "vat_number":"SE556000000001"}`. The host asserts the
+/// status; the crate records it.
+///
+/// Never add a wildcard arm over this enum (docs/08 §6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuyerTaxStatus {
+    /// A private individual. Destination-rate VAT applies within the EU.
+    Consumer,
+    /// A VAT-registered business. Reverse charge applies withing the EU.
+    Business {
+        /// The buyer's VAT number, as validity by the host.
+        vat_number: VatNumber,
+    },
+}
+
+/// One line of a sale or refund (docs/04 §2).
+///
+/// `amount_excl_vat` is the net figure the host's checkout computed, never
+/// backed out of a gross by division (docs/04 §2.1), and it is not negative:
+/// a negative line is a refund, and refund are their own event. That one
+/// field is private so [`SaleLine::new`] is the only way in; the other three
+/// are proven types and stay public.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SaleLineWire")]
+pub struct SaleLine {
+    /// What was sold. Free text; may reach teh SIE output.
+    pub description: String,
+    amount_excl_vat: Money,
+    /// The rate this line is taxed at.
+    pub vat_rate: VatRate,
+    /// Goods or services — decides EU treatment.
+    pub goods_or_services: SupplyKind,
+}
+
+impl SaleLine {
+    /// Build a line, refusing a negative amount. Zero is allowed: a
+    /// complimentary line is still a line.
+    ///
+    /// # Errors
+    ///
+    /// [`EventError::NegativeLineAmount`] if `amount_excl_vat` is below zero.
+    pub fn new(
+        description: String,
+        amount_excl_vat: Money,
+        vat_rate: VatRate,
+        goods_or_services: SupplyKind,
+    ) -> Result<SaleLine, EventError> {
+        if amount_excl_vat.is_negative() {
+            return Err(EventError::NegativeLineAmount {
+                description,
+                amount: amount_excl_vat,
+            });
+        }
+        Ok(SaleLine {
+            description,
+            amount_excl_vat,
+            vat_rate,
+            goods_or_services,
+        })
+    }
+
+    /// The wire shape of [`SaleLine`], before the sign check.
+    #[must_use]
+    pub const fn amount_excl_vat(&self) -> Money {
+        self.amount_excl_vat
+    }
+}
+
+/// The wire shape of [`SaleLine`], before the sign check.
+#[derive(Deserialize)]
+struct SaleLineWire {
+    description: String,
+    amount_excl_vat: Money,
+    vat_rate: VatRate,
+    goods_or_services: SupplyKind,
+}
+
+impl TryFrom<SaleLineWire> for SaleLine {
+    type Error = EventError;
+
+    fn try_from(w: SaleLineWire) -> Result<SaleLine, EventError> {
+        SaleLine::new(
+            w.description,
+            w.amount_excl_vat,
+            w.vat_rate,
+            w.goods_or_services,
+        )
+    }
+}
+
+/// A customer's payment was captured (docs/02 §5). The accounting event for
+/// a sale — an order that is never paid produces no bookkeeping.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaleCaptured {
+    /// Host-assigned, unique across the log.
+    pub id: EventId,
+    /// Capture date — the verification date.
+    pub at: NaiveDate,
+    /// Who collected the money.
+    pub provider: ProviderId,
+    /// Consumer or business.
+    pub buyer: BuyerTaxStatus,
+    /// Description country, ISO 3166-1 alpha-2. Decides the VAT scenario.
+    pub ship_to: CountryCode,
+    /// What was sold, net of VAT.
+    pub lines: Vec<SaleLine>,
+}
+
+/// Money was returned to a customer (docs/02 §5). Carrier lines, not a
+/// total: a partial refund of mixed-VAT order cannot be apportioned from a
+/// total alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefundIssued {
+    /// Host-assigned, unique across the log.
+    pub id: EventId,
+    /// Refund date.
+    pub at: NaiveDate,
+    /// The sale being reversed, in whole or in part.
+    pub original_sale: EventId,
+    /// What was refunded, net of VAT, as positive amounts.
+    pub lines: Vec<SaleLine>,
+}
+
+/// A payment provider charged a fee (docs/02 §5).
+///
+/// `amount` is strictly positive and is the one private field, so
+/// [`FeeCharged::new`] is the only way in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "FeeChargedWire")]
+pub struct FeeCharged {
+    /// Host-assigned, unique across the log.
+    pub id: EventId,
+    /// Charge date.
+    pub at: NaiveDate,
+    /// Who charged it.
+    pub provider: ProviderId,
+    /// What it was for.
+    pub kind: FeeKind,
+    amount: Money,
+}
+
+impl FeeCharged {
+    /// Build a fee, refusing a zero or negative amount.
+    ///
+    /// # Errors
+    ///
+    /// [`EventError::NonPositiveFee`] unless `amount` is above zero.
+    pub fn new(
+        id: EventId,
+        at: NaiveDate,
+        provider: ProviderId,
+        kind: FeeKind,
+        amount: Money,
+    ) -> Result<FeeCharged, EventError> {
+        if amount.is_zero() || amount.is_negative() {
+            return Err(EventError::NonPositiveFee { event: id, amount });
+        }
+        Ok(FeeCharged {
+            id,
+            at,
+            provider,
+            kind,
+            amount,
+        })
+    }
+
+    /// The fee, proven positive.
+    #[must_use]
+    pub const fn amount(&self) -> Money {
+        self.amount
+    }
+}
+
+/// The wire shape of [`FeeCharged`], before the sign check.
+#[derive(Deserialize)]
+struct FeeChargedWire {
+    id: EventId,
+    at: NaiveDate,
+    provider: ProviderId,
+    kind: FeeKind,
+    amount: Money,
+}
+
+impl TryFrom<FeeChargedWire> for FeeCharged {
+    type Error = EventError;
+
+    fn try_from(w: FeeChargedWire) -> Result<FeeCharged, EventError> {
+        FeeCharged::new(w.id, w.at, w.provider, w.kind, w.amount)
+    }
+}
+
+/// A provider transferred a net amount to the bank (docs/02 §5).
+///
+/// `covers` is explicit: the host has the provider's settlement report and
+/// says which event this payout nets together. The library never guesses
+/// (docs/04 §2.1). `amount` is unconstructed — a provider can net to a
+/// negative payout — and whether it reconciles is invariant I2, checked by
+/// `settle`, not by the type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayoutSettled {
+    /// Host-assigned, unique across the log.
+    pub id: EventId,
+    /// The date the money landed.
+    pub at: NaiveDate,
+    /// Who paid out.
+    pub provider: ProviderId,
+    /// Net amount, as it hits the bank.
+    pub amount: Money,
+    /// The sale, refund and fee events this payout nets together.
+    pub covers: Vec<EventId>,
+}
+
+/// One event in the log — the entire input vocabulary (docs/02 §5).
+///
+/// Wire form is one JSON object per line, tagged, `type` in `snake_case`:
+/// `sale_captured`, `refund_issued`, `fee_charged`, `payout_settled`. Each
+/// variant wraps its own struct so a rule can take a `&SaleCaptured` rather
+/// than re-matching the enum.
+///
+/// Never add wildcard arm over this enum (docs/08 §6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Event {
+    /// See [`SaleCaptured`].
+    SaleCaptured(SaleCaptured),
+    /// See [`RefundIssued`].
+    RefundIssued(RefundIssued),
+    /// See [`FeeCharged`].
+    FeeCharged(FeeCharged),
+    /// See [`PayoutSettled`].
+    PayoutSettled(PayoutSettled),
+}
+
+impl Event {
+    /// The event's id, whichever kind it is.
+    #[must_use]
+    pub fn id(&self) -> &EventId {
+        match self {
+            Event::SaleCaptured(e) => &e.id,
+            Event::RefundIssued(e) => &e.id,
+            Event::FeeCharged(e) => &e.id,
+            Event::PayoutSettled(e) => &e.id,
+        }
+    }
+
+    /// The event's date, whichever kind it is. With [`Event::id`], the sort
+    /// key before numbering (docs/03 §4.2).
+    #[must_use]
+    pub fn at(&self) -> NaiveDate {
+        match self {
+            Event::SaleCaptured(e) => e.at,
+            Event::RefundIssued(e) => e.at,
+            Event::FeeCharged(e) => e.at,
+            Event::PayoutSettled(e) => e.at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    // Tests are the one place `unwrap()` is right: a wrong `Err` here is a test
-    // failure, which is the point. The crate-level deny still holds for library code.
-    #![allow(clippy::unwrap_used)]
+    // Tests are the one place `unwrap()` and `panic!()` are right: a wrong
+    // `Err` or a wrong variant here is a test failure, which is the point.
+    // The crate-level deny still holds for library code.
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    fn kr(s: &str) -> Money {
+        Money::parse(s).unwrap()
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
 
     #[test]
     fn event_id_is_any_non_empty_string() {
@@ -507,5 +803,139 @@ mod tests {
         assert!(serde_json::from_str::<VatRate>(r#""Standard""#).is_err());
         assert!(serde_json::from_str::<VatRate>(r#""25""#).is_err());
         assert!(serde_json::from_str::<VatRate>("25").is_err());
+    }
+
+    #[test]
+    fn docs_04_example_lines_round_trip_byte_for_byte() {
+        // The three JSONL lines from docs/04 §2.2, verbatim. Field order in
+        // the structure matches the document, so serilaising back must give
+        // the same bytes — that ties the code to the contract.
+        let sale = r#"{"type":"sale_captured","id":"ord_1001","at":"2026-01-05","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"SE","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":"standard","goods_or_services":"goods"}]}"#;
+        let fee = r#"{"type":"fee_charged","id":"fee_2026_01_08","at":"2026-01-08","provider":"stripe","kind":"transaction","amount":"1168.00"}"#;
+        let payout = r#"{"type":"payout_settled","id":"po_9001","at":"2026-01-08","provider":"stripe","amount":"47832.00","covers":["ord_1001","fee_2026_01_08"]}"#;
+
+        for line in [sale, fee, payout] {
+            let event: Event = serde_json::from_str(line).unwrap();
+            assert_eq!(serde_json::to_string(&event).unwrap(), line);
+        }
+
+        let Event::SaleCaptured(s) = serde_json::from_str::<Event>(sale).unwrap() else {
+            panic!("tag `sale_captured` must produce SaleCaptured");
+        };
+        assert_eq!(s.id, EventId::parse("ord_1001").unwrap());
+        assert_eq!(s.at, date(2026, 1, 5));
+        assert_eq!(s.buyer, BuyerTaxStatus::Consumer);
+        assert_eq!(s.ship_to, CountryCode::SE);
+        assert_eq!(s.lines.len(), 1);
+        assert_eq!(s.lines[0].amount_excl_vat(), kr("1000.00"));
+        assert_eq!(s.lines[0].vat_rate, VatRate::Standard);
+
+        let Event::FeeCharged(f) = serde_json::from_str::<Event>(fee).unwrap() else {
+            panic!("tag `fee_charged` must produce FeeCharged");
+        };
+        assert_eq!(f.kind, FeeKind::Transaction);
+        assert_eq!(f.amount, kr("1168.00"));
+
+        let Event::PayoutSettled(p) = serde_json::from_str::<Event>(payout).unwrap() else {
+            panic!("tag `payout_settled` must produce PayoutSettled");
+        };
+        assert_eq!(p.amount, kr("47832.00"));
+        assert_eq!(p.covers.len(), 2);
+        assert_eq!(p.covers[1], EventId::parse("fee_2026_01_08").unwrap());
+    }
+
+    #[test]
+    fn id_and_at_are_the_sort_key_for_every_kind() {
+        let refund = r#"{"type":"refund_issued","id":"rf_1","at":"2026-01-06","original_sale":"ord_1001","lines":[]}"#;
+        let event: Event = serde_json::from_str(refund).unwrap();
+        assert_eq!(event.id(), &EventId::parse("rf_1").unwrap());
+        assert_eq!(event.at(), date(2026, 1, 6));
+        assert_eq!(serde_json::to_string(&event).unwrap(), refund);
+    }
+
+    #[test]
+    fn sale_line_amount_is_never_negative() {
+        let line = |amount: &str| {
+            SaleLine::new(
+                "Widget".to_owned(),
+                kr(amount),
+                VatRate::Standard,
+                SupplyKind::Goods,
+            )
+        };
+        assert_eq!(line("0.00").unwrap().amount_excl_vat(), Money::ZERO);
+        assert_eq!(
+            line("-0.01"),
+            Err(EventError::NegativeLineAmount {
+                description: "Widget".to_string(),
+                amount: kr("-0.01"),
+            })
+        );
+        let json = r#"{"description":"Widget","amount_excl_vat":"-1.00","vat_rate":"standard","goods_or_services":"goods"}"#;
+        let err = serde_json::from_str::<SaleLine>(json).unwrap_err();
+        assert!(err.to_string().contains("negative amount -1.0"), "{err}");
+    }
+
+    #[test]
+    fn fee_amount_is_strictly_positive() {
+        let fee = |amount: &str| {
+            FeeCharged::new(
+                EventId::parse("fee_1").unwrap(),
+                date(2026, 1, 8),
+                ProviderId::parse("stripe").unwrap(),
+                FeeKind::Payout,
+                kr(amount),
+            )
+        };
+        assert_eq!(fee("0.01").unwrap().amount(), kr("0.01"));
+        for amount in ["0.00", "-1.00"] {
+            assert_eq!(
+                fee(amount),
+                Err(EventError::NonPositiveFee {
+                    event: EventId::parse("fee_1").unwrap(),
+                    amount: kr(amount),
+                }),
+                "{amount}"
+            );
+        }
+        let json = r#"{"type":"fee_charged","id":"fee_1","at":"2026-01-08","provider":"stripe","kind":"other","amount":"0.00"}"#;
+        assert!(serde_json::from_str::<Event>(json).is_err());
+    }
+
+    #[test]
+    fn business_buyer_carries_a_vat_number() {
+        let business = r#"{"kind":"business","vat_number":"SE556000000001"}"#;
+        let status: BuyerTaxStatus = serde_json::from_str(business).unwrap();
+        assert_eq!(
+            status,
+            BuyerTaxStatus::Business {
+                vat_number: VatNumber::parse("SE556000000001").unwrap()
+            }
+        );
+        assert_eq!(serde_json::to_string(&status).unwrap(), business);
+        assert!(serde_json::from_str::<BuyerTaxStatus>(r#"{"kind":"business"}"#).is_err());
+        assert!(
+            serde_json::from_str::<BuyerTaxStatus>(r#"{"kind":"business","vat_number":""}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<BuyerTaxStatus>(r#"{"kind":"company"}"#).is_err());
+    }
+
+    #[test]
+    fn malformed_event_fail_closed() {
+        for json in [
+            // unknown tag
+            r#"{"type":"order_placed","id":"o_1","at":"2026-01-05"}"#,
+            // missing tag
+            r#"{"id":"po_1","at":"2026-01-08","provider":"stripe","amount":"1.00","covers":[]}"#,
+            // JSON number where the schema says string (ADR-0002)
+            r#"{"type":"fee_charged","id":"f_1","at":"2026-01-08","provider":"stripe","kind":"other","amount":1168.00}"#,
+            // date not ISO
+            r#"{"type":"payout_settled","id":"po_1","at":"08/01/2026","provider":"stripe","amount":"1.00","covers":[]}"#,
+            // missing field
+            r#"{"type":"sale_captured","id":"o_1","at":"2026-01-05","provider":"stripe","buyer":{"kind":"consumer"},"lines":[]}"#,
+        ] {
+            assert!(serde_json::from_str::<Event>(json).is_err(), "{json}");
+        }
     }
 }
