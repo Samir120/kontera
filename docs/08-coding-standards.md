@@ -72,10 +72,10 @@ The cost is a few lines of boilerplate. The benefit is that passing an
 
 - `thiserror` in library crates. `anyhow` only in `kontera-cli`, never in core.
 - One crate-level error enum, `PostingError`. Each module with its own failure
-  modes has its own enum (`MoneyError`, `AccountError`, `VerificationError`)
-  that nests into it via `#[from]` with `#[error(transparent)]`, so `?` works
-  at every boundary and the message is never repeated in the chain. Sub-domain
-  enums (`ScenarioGap`) nest the same way.
+  modes has its own enum (`MoneyError`, `AccountError`, `VerificationError`,
+  `EventError`) that nests into it via `#[from]` with `#[error(transparent)]`,
+  so `?` works at every boundary and the message is never repeated in the
+  chain. Sub-domain enums (`ScenarioGap`) nest the same way.
 - **Error variants carry data, not prose.** `SettlementMismatch { delta }` is
   useful; `SettlementMismatch(String)` is not. The host needs to branch on it.
 - Every error message answers: what was wrong, which event, what to do next.

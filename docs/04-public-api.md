@@ -24,70 +24,99 @@ valid UTF-8. See [ADR-0003](adr/0003-sie-4i-output.md).
 ## 2. Event schema v1
 
 Serde-compatible. JSON Lines on the wire; `#[serde(tag = "type")]` internally
-tagged.
+tagged. `EVENT_SCHEMA_VERSION` is `1`.
 
 ```rust
-pub struct EventId(pub String);   // host-assigned, globally unique, stable
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+// Identifiers. Boundary parsers, strict on shape and nothing else.
+pub struct EventId(String);        // host-assigned, globally unique, stable; non-empty
+pub struct ProviderId(String);     // lowercase TOML bare key, [a-z0-9_-]+ — it is the config key
+pub struct CountryCode([u8; 2]);   // ISO 3166-1 alpha-2 *shape*: two ASCII capitals, not a membership test
+pub struct VatNumber(String);      // non-empty; VIES validation is the host's (§2.1)
 
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    SaleCaptured {
-        id: EventId,
-        at: NaiveDate,
-        provider: ProviderId,
-        buyer: BuyerTaxStatus,
-        ship_to: CountryCode,          // ISO 3166-1 alpha-2
-        lines: Vec<SaleLine>,
-    },
-    RefundIssued {
-        id: EventId,
-        at: NaiveDate,
-        original_sale: EventId,
-        lines: Vec<SaleLine>,          // partial refunds need lines, not a total
-    },
-    FeeCharged {
-        id: EventId,
-        at: NaiveDate,
-        provider: ProviderId,
-        kind: FeeKind,                 // Transaction | Payout | Dispute | Other
-        amount: Money,                 // positive
-    },
-    PayoutSettled {
-        id: EventId,
-        at: NaiveDate,
-        provider: ProviderId,
-        amount: Money,                 // net, as it hits the bank
-        covers: Vec<EventId>,          // explicit. never inferred
-    },
+    SaleCaptured(SaleCaptured),    // each variant wraps its own struct, so a rule can
+    RefundIssued(RefundIssued),    // take a `&SaleCaptured` without re-matching
+    FeeCharged(FeeCharged),
+    PayoutSettled(PayoutSettled),
+}
+
+pub struct SaleCaptured {
+    pub id: EventId,
+    pub at: NaiveDate,
+    pub provider: ProviderId,
+    pub buyer: BuyerTaxStatus,
+    pub ship_to: CountryCode,
+    pub lines: Vec<SaleLine>,
+}
+pub struct RefundIssued {
+    pub id: EventId,
+    pub at: NaiveDate,
+    pub original_sale: EventId,
+    pub lines: Vec<SaleLine>,          // partial refunds need lines, not a total
+}
+pub struct FeeCharged {
+    pub id: EventId,
+    pub at: NaiveDate,
+    pub provider: ProviderId,
+    pub kind: FeeKind,                 // Transaction | Payout | Dispute | Other
+    amount: Money,                     // private: strictly positive, via FeeCharged::new
+}
+pub struct PayoutSettled {
+    pub id: EventId,
+    pub at: NaiveDate,
+    pub provider: ProviderId,
+    pub amount: Money,                 // net, as it hits the bank; may be negative
+    pub covers: Vec<EventId>,          // explicit. never inferred
 }
 
 pub struct SaleLine {
     pub description: String,
-    pub amount_excl_vat: Money,
+    amount_excl_vat: Money,            // private: non-negative, via SaleLine::new
     pub vat_rate: VatRate,             // Standard | Reduced12 | Reduced6 | Zero
-    pub goods_or_services: SupplyKind, // affects EU treatment
+    pub goods_or_services: SupplyKind, // Goods | Services
 }
 
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuyerTaxStatus {
     Consumer,
-    Business { vat_number: String },   // caller validates against VIES, not us
+    Business { vat_number: VatNumber },  // caller validates against VIES, not us
 }
 ```
+
+Enum wire forms are `snake_case` and match the config keys in §3 exactly:
+`"standard"`, `"reduced12"`, `"reduced6"`, `"zero"`. `VatRate` carries no
+percentage — the number comes from `[vat.rates]` and is applied in `vat.rs`.
 
 ### 2.1 Design notes
 
 - **`amount_excl_vat`, not `amount_incl_vat`.** Incl-VAT input forces the library
   to back out VAT by division, which introduces rounding the host's checkout
   didn't do. The host knows its own net figures; it passes them.
+- **Two sign constraints live in the types.** A sale line is never negative (a
+  negative line is a refund, and refunds are their own event); a fee is strictly
+  positive. Each is the one private field of its struct, so the constructor is
+  the only way in and JSON deserialisation goes through it. An empty `lines`
+  on a sale or refund is *not* a type-level rejection — it needs the event id
+  for a useful message, which is the `validate` stage's job ([03 §4.1](03-architecture.md#41-pipeline-stages)).
 - **`covers` is explicit.** The host has the provider's settlement report. The
   library does not guess which events a payout covers — guessing is precisely
   where these systems fail.
 - **VAT number is not validated here.** VIES lookup is network I/O. The host does
   it and passes the result. The library trusts the caller's assertion and
   records it.
+- **`ProviderId` is case-sensitive and lowercase.** It is the lookup key into
+  `[accounts.receivable]`, and case is the one way `"Stripe"` and `stripe` can
+  disagree while looking identical.
 - **No customer, product or address data.** Only what affects posting. Less PII
   crossing the boundary is a feature.
+
+> **Q6 (open):** §7 says the schema version travels "in the payload", but the
+> JSONL in §2.2 has no `schema_version` field. Per-line field, a header line,
+> or out-of-band — decide in ADR-0005 before M5, when a host first persists
+> events.
 
 ### 2.2 Example
 
@@ -172,6 +201,9 @@ pub enum PostingError {
     Account(#[from] AccountError),             // Syntax | OutOfRange
     #[error(transparent)]
     Verification(#[from] VerificationError),   // Unbalanced | Empty | InvalidSeries
+    #[error(transparent)]
+    Event(#[from] EventError),                 // Invalid{EventId,ProviderId,CountryCode,VatNumber}
+                                               // | NegativeLineAmount | NonPositiveFee
 
     // ── leaf: added with the code that first returns each ────────────────
     #[error("settlement {payout} does not reconcile: expected {expected}, \
