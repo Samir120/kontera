@@ -78,6 +78,20 @@ property test above meaningful rather than vacuous.
 and is itself tested.
 A generator that emits a log `post()` rejects is a generator bug, and there
 should be a test asserting `valid_event_log()` output always yields `Ok`.
+Until `post()` exists (M2), `kontera-testkit/tests/valid_event_log.rs`
+restates each consistency rule independently — unique ids, dates in the
+fiscal year, refunds bounded by their sale, every event covered once by a
+later payout of its provider, payout = Σ gross sales − Σ gross refunds −
+Σ fees by an `i128` reference — and checks that every promised feature
+actually occurs.
+
+The generator takes the VAT rate table as a parameter,
+`valid_event_log(rates: VatRates)`, with `default_test_rates()` marked
+**VERIFY**, so no regulated number is hardcoded in test scaffolding. From M2
+the rates come from `Config`. It currently emits `SeDomestic` sales only, all
+settled; cross-border scenarios and an unsettled tail join it alongside the
+rules that post them. Use it from integration tests only — an in-module test
+inside `kontera-core` would see two copies of the crate's types.
 
 ### 2.2 Rounding
 
