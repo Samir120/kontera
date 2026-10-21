@@ -241,11 +241,18 @@ table stakes for a ledger; I2 is what A2X sells and what no library provides.
 
 ## 7. Period semantics
 
-- A `FiscalYear` has a start and end date.
+- A `FiscalYear` has a start and end date, both inclusive, and is
+  month-aligned: it starts on the 1st and ends on the last day of a month.
+  BFL 3 kap. 1 § has a räkenskapsår cover whole calendar months (**VERIFY**).
+  Length is not checked — a first or changed year may be shorter or longer.
 - An event dated outside the fiscal year is `Err(OutsidePeriod)`.
 - A **closed period** rejects new events: `Err(PeriodClosed)`. Late events must
   be posted to the current open period as corrections, never backdated into a
   period whose momsdeklaration has been filed.
+- The closed-period unit is the calendar month (`"2026-01"`). A quarterly or
+  annual filer lists every month of a filed period. Closed periods are listed
+  under `[fiscal_year]`, so a closed month outside the year, or one listed
+  twice, is a config error rather than a silently ignored line.
 - v0.1 tracks open/closed as config, not state — the host says which periods are
   closed. The library has no memory. See [ADR-0001](adr/0001-pure-core.md).
 

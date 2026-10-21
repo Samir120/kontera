@@ -225,7 +225,7 @@ pub enum PostingError {
     MissingAccountMapping { key: MappingKey },
 
     #[error("event {event} dated {at} falls in closed period {period}")]
-    PeriodClosed { event: EventId, at: NaiveDate, period: String },
+    PeriodClosed { event: EventId, at: NaiveDate, period: Month },
 
     #[error("event {event} dated {at} is outside fiscal year {start}–{end}")]
     OutsidePeriod { event: EventId, at: NaiveDate, start: NaiveDate, end: NaiveDate },
@@ -237,6 +237,15 @@ code that first returns it and a test that produces it — a variant nothing
 constructs is untestable beyond its message. `Unbalanced` lives in
 `VerificationError`, not at the top level: the private constructor is where it
 is detected, so that is where it is defined.
+
+Two error enums sit outside `PostingError`: `ConfigError` (fiscal year, months,
+org number) and `VatError` (`VatPercent`). Both are raised while the host
+deserialises its config, before `post()` is called — `post()` takes an
+already-proven `&Config` — so no path through `post()` produces them, and
+nesting them would add variants nothing can construct. Through serde they
+surface as the deserialiser's error, carrying the same message; a host calling
+`FiscalYear::new` or `VatPercent::parse` directly gets the typed value. If a
+later `post()` stage ever raises a variant of either, that enum nests then.
 
 `SettlementMismatch` carries `delta` deliberately — that number is the first
 thing a human needs, and it is usually a fee the host forgot to emit.

@@ -25,6 +25,7 @@ mod vat;
 mod verification;
 
 pub use account::{AccountError, AccountKind, AccountNumber};
+pub use config::{ConfigError, FiscalYear, Month, OrgNumber};
 pub use error::PostingError;
 pub use event::{
     BuyerTaxStatus, CountryCode, Event, EventError, EventId, FeeCharged, FeeKind, PayoutSettled,
