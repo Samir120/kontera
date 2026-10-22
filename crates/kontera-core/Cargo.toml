@@ -17,4 +17,5 @@ thiserror    = { workspace = true }
 [dev-dependencies]
 proptest        = { workspace = true }
 serde_json      = { workspace = true }
+toml            = { workspace = true }
 kontera-testkit = { workspace = true }

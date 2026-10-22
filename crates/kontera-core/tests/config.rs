@@ -3,10 +3,12 @@
 //! The leaf types come first. `Month` is proven over every `YYYY-MM` digit
 //! string, a domain small enough to enumerate. `FiscalYear::new` is checked
 //! against its rules restated as an independent predicate. The `Config` tree
-//! tests join this file in T8b.
+//! is parsed from TOML, as a host would.
 
 use chrono::{Datelike, Days, Months, NaiveDate};
-use kontera_core::{ConfigError, FiscalYear, Month, OrgNumber};
+use kontera_core::{
+    AccountNumber, Config, ConfigError, FiscalYear, Month, OrgNumber, Returns, SeRates, VatPercent,
+};
 use proptest::prelude::*;
 
 #[test]
@@ -151,4 +153,195 @@ proptest! {
         let expected = start <= end && aligned && inside && distinct;
         prop_assert_eq!(FiscalYear::new(start, end, &closed).is_ok(), expected);
     }
+}
+
+/// Only the required keys.
+const MINIMAL: &str = r#"
+schema_version = 1
+
+[company]
+org_number = "XXXXXX-XXXX"
+name = "Exempelbutiken AB"
+
+[fiscal_year]
+start = "2026-01-01"
+end = "2026-12-31"
+
+[series]
+default = "A"
+start_number = 1
+
+[accounts]
+bank = "1930"
+provider_fee = "6570"
+
+[accounts.receivable]
+stripe = "1580"
+
+[vat.rates.se]
+standard = "25"
+reduced12 = "12"
+reduced6 = "6"
+"#;
+
+/// Every table and key. The OSS accounts are arbitrary numbers of the right
+/// class, not a mapping (Q8).
+const FULL: &str = r#"
+schema_version = 1
+
+[company]
+org_number = "XXXXXX-XXXX"
+name = "Exempelbutiken AB"
+
+[fiscal_year]
+start = "2026-01-01"
+end = "2026-12-31"
+closed_periods = ["2026-01"]
+
+[series]
+default = "A"
+start_number = 1
+
+[accounts]
+bank = "1930"
+provider_fee = "6570"
+
+[accounts.receivable]
+stripe = "1580"
+klarna = "1581"
+
+[accounts.sales]
+eu_b2b_reverse = "3108"
+export_outside_eu = "3105"
+eu_b2c_oss = "3999"
+
+[accounts.sales.se]
+standard = "3001"
+reduced12 = "3002"
+reduced6 = "3003"
+
+[accounts.vat_payable]
+eu_b2c_oss = "2999"
+
+[accounts.vat_payable.se]
+standard = "2611"
+reduced12 = "2621"
+reduced6 = "2631"
+
+[returns]
+strategy = "reverse_original"
+
+[vat.rates.se]
+standard = "25.00"
+reduced12 = "12.00"
+reduced6 = "6.00"
+"#;
+
+fn parse(toml: &str) -> Result<Config, toml::de::Error> {
+    toml::from_str(toml)
+}
+
+fn konto(s: &str) -> AccountNumber {
+    AccountNumber::parse(s).unwrap()
+}
+
+#[test]
+fn a_minimal_config_parses_with_every_optional_mapping_none() {
+    let c = parse(MINIMAL).unwrap();
+    let a = c.accounts();
+    assert_eq!((a.bank, a.provider_fee), (konto("1930"), konto("6570")));
+    assert_eq!(a.receivable.len(), 1);
+    assert_eq!(a.sales.se, SeRates::default());
+    assert_eq!(
+        (
+            a.sales.eu_b2b_reverse,
+            a.sales.export_outside_eu,
+            a.sales.eu_b2c_oss
+        ),
+        (None, None, None)
+    );
+    assert_eq!(a.vat_payable.se, SeRates::default());
+    assert_eq!(a.vat_payable.eu_b2c_oss, None);
+    assert_eq!(c.returns(), Returns::ReverseOriginal);
+    assert_eq!(c.series().start_number.get(), 1);
+    assert_eq!(
+        c.vat().rates.se.reduced6,
+        VatPercent::parse("6.00").unwrap()
+    );
+}
+
+#[test]
+fn a_full_config_reads_every_key() {
+    let c = parse(FULL).unwrap();
+    let a = c.accounts();
+    let receivable: Vec<_> = a
+        .receivable
+        .iter()
+        .map(|(p, k)| (p.as_str(), k.get()))
+        .collect();
+    assert_eq!(receivable, [("klarna", 1581), ("stripe", 1580)]);
+    assert_eq!(a.sales.se.reduced12, Some(konto("3002")));
+    assert_eq!(a.sales.eu_b2b_reverse, Some(konto("3108")));
+    assert_eq!(a.sales.export_outside_eu, Some(konto("3105")));
+    assert_eq!(a.sales.eu_b2c_oss, Some(konto("3999")));
+    assert_eq!(a.vat_payable.se.reduced6, Some(konto("2631")));
+    assert_eq!(a.vat_payable.eu_b2c_oss, Some(konto("2999")));
+    assert_eq!(c.fiscal_year().closed_periods().len(), 1);
+    assert_eq!(c.company().name, "Exempelbutiken AB");
+}
+
+#[test]
+fn schema_version_must_be_present_and_equal_to_one() {
+    let missing = MINIMAL.replace("schema_version = 1\n", "");
+    assert!(parse(&missing).is_err());
+    let two = parse(&MINIMAL.replace("schema_version = 1", "schema_version = 2")).unwrap_err();
+    assert!(
+        two.to_string()
+            .contains("config `schema_version` is 2; this version of Kontera reads 1"),
+        "{two}"
+    );
+}
+
+#[test]
+fn an_unknown_key_is_rejected_at_every_level() {
+    let headers: Vec<&str> = FULL.lines().filter(|l| l.starts_with('[')).collect();
+    assert_eq!(headers.len(), 11, "every explicit table in FULL is covered");
+    let top = format!("typo = \"1\"\n{FULL}");
+    assert!(parse(&top).is_err(), "top level");
+    // `[vat]` and `[vat.rates]` exist only implicitly in FULL; TOML lets a
+    // parent table be written after its child.
+    for parent in ["[vat]", "[vat.rates]"] {
+        let typo = format!("{FULL}\n{parent}\ntypo = \"1\"\n");
+        assert!(parse(&typo).is_err(), "{parent}");
+        let empty = format!("{FULL}\n{parent}\n");
+        assert!(
+            parse(&empty).is_ok(),
+            "{parent} without a typo still parses"
+        );
+    }
+    for header in headers {
+        let typo = FULL.replace(&format!("{header}\n"), &format!("{header}\ntypo = \"1\"\n"));
+        assert!(parse(&typo).is_err(), "{header}");
+    }
+}
+
+#[test]
+fn boundary_values_are_rejected_by_their_parsers() {
+    for (from, to) in [
+        ("stripe = \"1580\"", "Stripe = \"1580\""),
+        ("start_number = 1", "start_number = 0"),
+        ("bank = \"1930\"", "bank = 1930"),
+        ("standard = \"25\"", "standard = 25"),
+        ("reduced6 = \"6\"\n", ""),
+    ] {
+        assert!(parse(&MINIMAL.replace(from, to)).is_err(), "{to:?}");
+    }
+}
+
+#[test]
+fn returns_has_one_strategy_and_defaults_to_it() {
+    let named = format!("{MINIMAL}\n[returns]\nstrategy = \"reverse_original\"\n");
+    assert_eq!(parse(&named).unwrap().returns(), Returns::ReverseOriginal);
+    let other = format!("{MINIMAL}\n[returns]\nstrategy = \"dedicated_account\"\n");
+    assert!(parse(&other).is_err());
 }
