@@ -33,6 +33,19 @@ pub enum AccountKind {
     FinancialItem,
 }
 
+/// The class range and its name, for error messages: `class 1 (assets)`.
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AccountKind::Asset => "class 1 (assets)",
+            AccountKind::EquityAndLiability => "class 2 (equity and liabilities)",
+            AccountKind::Income => "class 3 (income)",
+            AccountKind::Expense => "classes 4–7 (expenses)",
+            AccountKind::FinancialItem => "class 8 (financial items)",
+        })
+    }
+}
+
 /// A four-digit BAS account number, `1000`–`8999` (docs/02 §2.2).
 ///
 /// The field is private and every constructor checks the range, so holding an
@@ -246,16 +259,33 @@ mod tests {
             ("1580", AccountKind::Asset),
             ("1930", AccountKind::Asset),
             ("2611", AccountKind::EquityAndLiability),
-            ("2612", AccountKind::EquityAndLiability),
-            ("2613", AccountKind::EquityAndLiability),
+            ("2621", AccountKind::EquityAndLiability),
+            ("2631", AccountKind::EquityAndLiability),
             ("3001", AccountKind::Income),
             ("3002", AccountKind::Income),
             ("3003", AccountKind::Income),
             ("3105", AccountKind::Income),
-            ("3106", AccountKind::Income),
+            ("3108", AccountKind::Income),
             ("6570", AccountKind::Expense),
         ] {
             assert_eq!(konto(s).class(), kind, "{s}");
+        }
+    }
+
+    #[test]
+    fn kind_display_names_the_class_range() {
+        // Error text is part of the UX (docs/05 §3.1): `ConfigError` prints these.
+        for (kind, text) in [
+            (AccountKind::Asset, "class 1 (assets)"),
+            (
+                AccountKind::EquityAndLiability,
+                "class 2 (equity and liabilities)",
+            ),
+            (AccountKind::Income, "class 3 (income)"),
+            (AccountKind::Expense, "classes 4–7 (expenses)"),
+            (AccountKind::FinancialItem, "class 8 (financial items)"),
+        ] {
+            assert_eq!(kind.to_string(), text);
         }
     }
 

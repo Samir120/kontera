@@ -163,7 +163,9 @@ VOEC (Norway) and UK schemes. Each is a real scenario. Each is `Err` for now.
 
 ## 4. Default account mapping
 
-All of it configurable. These are defaults, and all are **VERIFY**.
+All of it configurable. These are defaults, and all are **VERIFY (Q8)**: the
+numbers were checked against Visma's fo_bas2023 and Spiris' kontoplan, and an
+accountant's review has the final word.
 
 ### 4.1 Balance sheet
 
@@ -172,12 +174,19 @@ All of it configurable. These are defaults, and all are **VERIFY**.
 | 1580 | Fordringar för kontokort och kuponger | Payment provider receivable (the clearing account) |
 | 1930 | Företagskonto / checkkonto | Bank |
 | 2611 | Utgående moms, 25 % | Output VAT standard |
-| 2612 | Utgående moms, 12 % | Output VAT reduced |
-| 2613 | Utgående moms, 6 % | Output VAT reduced |
+| 2621 | Utgående moms, 12 % | Output VAT reduced |
+| 2631 | Utgående moms, 6 % | Output VAT reduced |
+| — | OSS output VAT | **VERIFY (Q8)** — no account confirmed |
+
+The 26xx numbering is by rate band, not sequential. 2612 is utgående moms på
+egna uttag 25 %, 2613 is utgående moms för uthyrning 25 %, and 2614 is
+utgående moms omvänd skattskyldighet 25 %. None of them is a reduced rate,
+and none is the OSS account.
 
 > **Q1 (open):** one 1580 for all providers, or `1581 Stripe`, `1582 Klarna`,
 > `1583 Swish`? Per-provider subaccounts make reconciliation far easier to read
-> and cost nothing. Leaning yes.
+> and cost nothing. Leaning yes. Whether 1581 onward is free in the chart is
+> part of Q8.
 
 ### 4.2 Income
 
@@ -186,15 +195,25 @@ All of it configurable. These are defaults, and all are **VERIFY**.
 | 3001 | Försäljning inom Sverige, 25 % moms | `SeDomestic` 25% |
 | 3002 | Försäljning inom Sverige, 12 % moms | `SeDomestic` 12% |
 | 3003 | Försäljning inom Sverige, 6 % moms | `SeDomestic` 6% |
-| 3106 | Försäljning varor till annat EU-land, momsfri | `EuB2bReverse` |
+| 3108 | Försäljning varor till annat EU-land, momsfri | `EuB2bReverse` |
 | 3105 | Försäljning varor till land utanför EU | `ExportOutsideEu` |
-| — | OSS sales accounts | **VERIFY** — BAS has dedicated accounts; confirm current numbers |
+| — | OSS sales | **VERIFY (Q8)** — no account confirmed |
+
+3106 is *Försäljning varor till annat EU-land, momspliktig*: an EU sale that
+carries Swedish VAT. It is not the reverse-charge account.
+
+No real account stands in for the two OSS rows, in this table or in the 04 §3
+example. A plausible-looking number is worse than none: every candidate
+already means something else.
 
 ### 4.3 Expense
 
 | Konto | Name | Role |
 |---|---|---|
 | 6570 | Bankkostnader | Payment provider fees |
+
+The BAS name is *Bankkostnader*. Payment provider fees are its role here, not
+its name. 01 §1.1 uses the BAS names.
 
 > **Q2 (open):** returns. Reversing against the original sales account keeps the
 > chart small and makes net revenue obvious. A dedicated returns account makes

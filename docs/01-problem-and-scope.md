@@ -30,13 +30,13 @@ Correct postings (default account mapping, see [02](02-domain-model.md)):
 
 | Date | Konto | Debet | Kredit |
 |---|---|---:|---:|
-| 01-05 | 1580 Fordran betalningsleverantör | 50 000.00 | |
+| 01-05 | 1580 Fordringar för kontokort och kuponger | 50 000.00 | |
 | 01-05 | 3001 Försäljning inom Sverige, 25 % moms | | 40 000.00 |
 | 01-05 | 2611 Utgående moms, 25 % | | 10 000.00 |
 | 01-05 | 3001 (retur) | 800.00 | |
 | 01-05 | 2611 (retur) | 200.00 | |
 | 01-05 | 1580 | | 1 000.00 |
-| 01-08 | 6570 Betalningsleverantörsavgifter | 1 168.00 | |
+| 01-08 | 6570 Bankkostnader | 1 168.00 | |
 | 01-08 | 1580 | | 1 168.00 |
 | 01-08 | 1930 Företagskonto | 47 832.00 | |
 | 01-08 | 1580 | | 47 832.00 |

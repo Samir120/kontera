@@ -225,6 +225,7 @@ dependencies = [
  "kontera-core",
  "proptest",
  "rust_decimal",
+ "toml",
 ]
 
 [[package]]

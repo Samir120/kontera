@@ -88,7 +88,7 @@ pub enum BuyerTaxStatus {
 
 Enum wire forms are `snake_case` and match the config keys in §3 exactly:
 `"standard"`, `"reduced12"`, `"reduced6"`, `"zero"`. `VatRate` carries no
-percentage — the number comes from `[vat.rates]` and is applied in `vat.rs`.
+percentage — the number comes from `[vat.rates.se]` and is applied in `vat.rs`.
 
 ### 2.1 Design notes
 
@@ -140,46 +140,85 @@ name       = "Exempelbutiken AB"
 [fiscal_year]
 start = "2026-01-01"
 end   = "2026-12-31"
-
-# Periods already filed. Events dated inside these are rejected.
+# Months already filed. Events dated inside these are rejected.
 closed_periods = ["2026-01"]
 
 [series]
-default = "A"
+default      = "A"
 start_number = 1
 
+# Every account number below is a default from 02 §4, and every one is
+# VERIFY (Q8): confirm it against the current BAS chart before relying on it.
 [accounts]
 bank         = "1930"
 provider_fee = "6570"
 
-[accounts.receivable]        # per provider — see Q1 in 01
+[accounts.receivable]            # per provider — see Q1 in 02 §4.1
 stripe = "1580"
 klarna = "1581"
+
+[accounts.sales]
+eu_b2b_reverse    = "3108"
+export_outside_eu = "3105"
+# eu_b2c_oss      =              # Q8: no account confirmed yet; leave unset
 
 [accounts.sales.se]
 standard  = "3001"
 reduced12 = "3002"
 reduced6  = "3003"
 
-[accounts.sales.eu_b2b_reverse]  = "3106"
-[accounts.sales.export_outside_eu] = "3105"
-
 [accounts.vat_payable]
+# eu_b2c_oss =                   # Q8: no account confirmed yet; leave unset
+
+[accounts.vat_payable.se]
 standard  = "2611"
-reduced12 = "2612"
-reduced6  = "2613"
+reduced12 = "2621"
+reduced6  = "2631"
 
 [returns]
-strategy = "reverse_original"    # or "dedicated_account"
+strategy = "reverse_original"    # the only strategy until Q2 is answered
 
-[vat.rates]                       # host-updatable; rates change
-se_standard = "25.00"
-se_reduced12 = "12.00"
-se_reduced6  = "6.00"
+[vat.rates.se]                   # host-updatable; rates change. VERIFY (Q7)
+standard  = "25.00"
+reduced12 = "12.00"
+reduced6  = "6.00"
 ```
 
-Missing mapping for a scenario the events require → `Err(MissingAccountMapping)`
-at validation time, not a silent fallback.
+This block is parsed by a test (`kontera-testkit/tests/docs_04_config_example.rs`),
+so it cannot drift from the types.
+
+**Required:** `schema_version` (must be `1`), `[company]`, `[fiscal_year]`,
+`[series]`, `accounts.bank`, `accounts.provider_fee`, `[accounts.receivable]`
+(it may be empty), and all three keys of `[vat.rates.se]`. **Optional:**
+`closed_periods`, every key under `[accounts.sales]` and
+`[accounts.vat_payable]`, and `[returns]`, which defaults to
+`reverse_original`.
+
+**Strict.** An unknown key at any level is an error, so a typo is never a
+silent `None`. Account numbers and rates are strings only: `bank = 1930` and
+`standard = 25` are rejected, because a TOML number is the wrong type for an
+identifier and a float for a rate (ADR-0002). The `[*.se]` keys are the
+`VatRate` wire forms from §2. `zero` has no key: a zero-rated line takes its
+accounts from its scenario.
+
+**Checked when the config is read**, before `post()` runs:
+
+| Key | Must be in |
+|---|---|
+| `bank`, every `receivable.*` | class 1 |
+| every `vat_payable.*` | class 2 |
+| every `sales.*` | class 3 |
+| `provider_fee` | classes 4–7 |
+
+`bank` must also differ from every receivable: a payout moves money from the
+clearing account to the bank, and the clearing account cannot net to zero (I3)
+if both are the same account. A violation is `ConfigError::WrongAccountClass`
+or `ConfigError::BankIsReceivable`, naming the key.
+
+A missing mapping for a scenario the events require is
+`Err(MissingAccountMapping)` at validation time, not a silent fallback. Leaving
+a key out is how a merchant who never sells abroad says so; a placeholder
+account would post real money to the wrong place.
 
 ## 4. Error taxonomy
 
@@ -238,14 +277,15 @@ constructs is untestable beyond its message. `Unbalanced` lives in
 `VerificationError`, not at the top level: the private constructor is where it
 is detected, so that is where it is defined.
 
-Two error enums sit outside `PostingError`: `ConfigError` (fiscal year, months,
-org number) and `VatError` (`VatPercent`). Both are raised while the host
-deserialises its config, before `post()` is called — `post()` takes an
-already-proven `&Config` — so no path through `post()` produces them, and
-nesting them would add variants nothing can construct. Through serde they
-surface as the deserialiser's error, carrying the same message; a host calling
-`FiscalYear::new` or `VatPercent::parse` directly gets the typed value. If a
-later `post()` stage ever raises a variant of either, that enum nests then.
+Two error enums sit outside `PostingError`: `ConfigError` (schema version,
+fiscal year, months, org number, account roles — §3) and `VatError`
+(`VatPercent`). Both are raised while the host deserialises its config,
+before `post()` is called — `post()` takes an already-proven `&Config` — so
+no path through `post()` produces them, and nesting them would add variants
+nothing can construct. Through serde they surface as the deserialiser's error,
+carrying the same message; a host calling `FiscalYear::new` or
+`VatPercent::parse` directly gets the typed value. If a later `post()` stage
+ever raises a variant of either, that enum nests then.
 
 `SettlementMismatch` carries `delta` deliberately — that number is the first
 thing a human needs, and it is usually a fee the host forgot to emit.

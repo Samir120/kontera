@@ -17,7 +17,7 @@ use std::str::FromStr;
 use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Deserializer};
 
-use crate::account::AccountNumber;
+use crate::account::{AccountKind, AccountNumber};
 use crate::event::ProviderId;
 use crate::vat::VatPercent;
 use crate::verification::Series;
@@ -80,6 +80,24 @@ pub enum ConfigError {
         found: u32,
         /// The version this library reads, [`CONFIG_SCHEMA_VERSION`].
         supported: u32,
+    },
+    /// A mapped account is in the wrong BAS class for its role.
+    #[error("`{key}` is {account}, which is in {}; this role needs {expected}", .account.class())]
+    WrongAccountClass {
+        /// The config key, as a dotted TOML path: `accounts.bank`.
+        key: String,
+        /// The account configured there.
+        account: AccountNumber,
+        /// The class the role needs.
+        expected: AccountKind,
+    },
+    /// The bank account is also a provider's clearing account.
+    #[error("`accounts.bank` and `accounts.receivable.{provider}` are both {account}; a payout must move money from the clearing account to a different bank account")]
+    BankIsReceivable {
+        /// The provider whose receivable is the bank account.
+        provider: ProviderId,
+        /// The shared account.
+        account: AccountNumber,
     },
 }
 
@@ -323,11 +341,17 @@ pub struct Config {
 }
 
 impl Config {
-    /// A config from its parts.
+    /// A config from its parts, with the cross-field checks applied.
     ///
     /// # Errors
     ///
-    /// None yet. The rules that span fields land with their tests.
+    /// - [`ConfigError::WrongAccountClass`] for the first mapped account
+    ///   outside its role's class: `bank` and every receivable in class 1,
+    ///   every `vat_payable` account in class 2, every `sales` account in
+    ///   class 3, `provider_fee` in classes 4–7.
+    /// - [`ConfigError::BankIsReceivable`] if `bank` is also a receivable.
+    ///   The clearing account must net to zero after a payout (I3), which
+    ///   it cannot do if the payout lands in it.
     pub fn new(
         company: Company,
         fiscal_year: FiscalYear,
@@ -336,6 +360,7 @@ impl Config {
         returns: Returns,
         vat: VatConfig,
     ) -> Result<Config, ConfigError> {
+        accounts.check_classes()?;
         Ok(Config {
             company,
             fiscal_year,
@@ -461,6 +486,65 @@ pub struct Accounts {
     pub vat_payable: VatPayableAccounts,
 }
 
+impl Accounts {
+    /// Every role-vs-class rule, in a fixed order, so the error a host sees
+    /// for a given config is always the same one.
+    fn check_classes(&self) -> Result<(), ConfigError> {
+        use AccountKind::{Asset, EquityAndLiability, Expense, Income};
+        require("accounts.bank", self.bank, Asset)?;
+        require("accounts.provider_fee", self.provider_fee, Expense)?;
+        for (provider, &account) in &self.receivable {
+            require(&format!("accounts.receivable.{provider}"), account, Asset)?;
+            if account == self.bank {
+                return Err(ConfigError::BankIsReceivable {
+                    provider: provider.clone(),
+                    account,
+                });
+            }
+        }
+        let s = &self.sales;
+        for (key, account) in s.se.entries() {
+            require_some(&format!("accounts.sales.se.{key}"), *account, Income)?;
+        }
+        require_some("accounts.sales.eu_b2b_reverse", s.eu_b2b_reverse, Income)?;
+        require_some(
+            "accounts.sales.export_outside_eu",
+            s.export_outside_eu,
+            Income,
+        )?;
+        require_some("accounts.sales.eu_b2c_oss", s.eu_b2c_oss, Income)?;
+        let v = &self.vat_payable;
+        for (key, account) in v.se.entries() {
+            let path = format!("accounts.vat_payable.se.{key}");
+            require_some(&path, *account, EquityAndLiability)?;
+        }
+        require_some(
+            "accounts.vat_payable.eu_b2c_oss",
+            v.eu_b2c_oss,
+            EquityAndLiability,
+        )
+    }
+}
+
+fn require(key: &str, account: AccountNumber, expected: AccountKind) -> Result<(), ConfigError> {
+    if account.class() == expected {
+        return Ok(());
+    }
+    Err(ConfigError::WrongAccountClass {
+        key: key.to_owned(),
+        account,
+        expected,
+    })
+}
+
+fn require_some(
+    key: &str,
+    account: Option<AccountNumber>,
+    expected: AccountKind,
+) -> Result<(), ConfigError> {
+    account.map_or(Ok(()), |a| require(key, a, expected))
+}
+
 /// `[accounts.sales]`: income accounts per VAT scenario (docs/02 §3).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -504,6 +588,17 @@ pub struct SeRates<T> {
     pub reduced12: T,
     /// `VatRate::Reduced6`.
     pub reduced6: T,
+}
+
+impl<T> SeRates<T> {
+    /// The entries with their wire keys, in a fixed order.
+    fn entries(&self) -> [(&'static str, &T); 3] {
+        [
+            ("standard", &self.standard),
+            ("reduced12", &self.reduced12),
+            ("reduced6", &self.reduced6),
+        ]
+    }
 }
 
 /// `[returns]`: how a refund is posted (docs/02 §4.3).

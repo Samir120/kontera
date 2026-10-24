@@ -3,11 +3,15 @@
 //! The leaf types come first. `Month` is proven over every `YYYY-MM` digit
 //! string, a domain small enough to enumerate. `FiscalYear::new` is checked
 //! against its rules restated as an independent predicate. The `Config` tree
-//! is parsed from TOML, as a host would.
+//! is parsed from TOML, as a host would, and its role-vs-class rules are
+//! proven over every account number for every role.
+
+use std::num::NonZeroU32;
 
 use chrono::{Datelike, Days, Months, NaiveDate};
 use kontera_core::{
-    AccountNumber, Config, ConfigError, FiscalYear, Month, OrgNumber, Returns, SeRates, VatPercent,
+    AccountKind, AccountNumber, Accounts, Company, Config, ConfigError, FiscalYear, Month,
+    OrgNumber, ProviderId, Returns, SeRates, Series, SeriesConfig, VatConfig, VatPercent, VatRates,
 };
 use proptest::prelude::*;
 
@@ -344,4 +348,135 @@ fn returns_has_one_strategy_and_defaults_to_it() {
     assert_eq!(parse(&named).unwrap().returns(), Returns::ReverseOriginal);
     let other = format!("{MINIMAL}\n[returns]\nstrategy = \"dedicated_account\"\n");
     assert!(parse(&other).is_err());
+}
+
+/// The class a role needs, restated from docs/04 §3 by the first digit,
+/// independent of `AccountNumber::class`.
+fn digit_allows(role: AccountKind, n: u16) -> bool {
+    let digit = n / 1000;
+    match role {
+        AccountKind::Asset => digit == 1,
+        AccountKind::EquityAndLiability => digit == 2,
+        AccountKind::Income => digit == 3,
+        AccountKind::Expense => (4..=7).contains(&digit),
+        AccountKind::FinancialItem => digit == 8,
+    }
+}
+
+/// Every account role in `Accounts`: its config key and the class it needs.
+const ROLES: [(&str, AccountKind); 13] = {
+    use AccountKind::{Asset, EquityAndLiability, Expense, Income};
+    [
+        ("accounts.bank", Asset),
+        ("accounts.provider_fee", Expense),
+        ("accounts.receivable.stripe", Asset),
+        ("accounts.sales.se.standard", Income),
+        ("accounts.sales.se.reduced12", Income),
+        ("accounts.sales.se.reduced6", Income),
+        ("accounts.sales.eu_b2b_reverse", Income),
+        ("accounts.sales.export_outside_eu", Income),
+        ("accounts.sales.eu_b2c_oss", Income),
+        ("accounts.vat_payable.se.standard", EquityAndLiability),
+        ("accounts.vat_payable.se.reduced12", EquityAndLiability),
+        ("accounts.vat_payable.se.reduced6", EquityAndLiability),
+        ("accounts.vat_payable.eu_b2c_oss", EquityAndLiability),
+    ]
+};
+
+fn stripe() -> ProviderId {
+    ProviderId::parse("stripe").unwrap()
+}
+
+/// Put `k` in the slot `key` names.
+fn assign(a: &mut Accounts, key: &str, k: AccountNumber) {
+    let some = Some(k);
+    match key {
+        "accounts.bank" => a.bank = k,
+        "accounts.provider_fee" => a.provider_fee = k,
+        "accounts.receivable.stripe" => {
+            a.receivable.insert(stripe(), k);
+        }
+        "accounts.sales.se.standard" => a.sales.se.standard = some,
+        "accounts.sales.se.reduced12" => a.sales.se.reduced12 = some,
+        "accounts.sales.se.reduced6" => a.sales.se.reduced6 = some,
+        "accounts.sales.eu_b2b_reverse" => a.sales.eu_b2b_reverse = some,
+        "accounts.sales.export_outside_eu" => a.sales.export_outside_eu = some,
+        "accounts.sales.eu_b2c_oss" => a.sales.eu_b2c_oss = some,
+        "accounts.vat_payable.se.standard" => a.vat_payable.se.standard = some,
+        "accounts.vat_payable.se.reduced12" => a.vat_payable.se.reduced12 = some,
+        "accounts.vat_payable.se.reduced6" => a.vat_payable.se.reduced6 = some,
+        "accounts.vat_payable.eu_b2c_oss" => a.vat_payable.eu_b2c_oss = some,
+        other => panic!("no account slot `{other}`"),
+    }
+}
+
+fn build(accounts: Accounts) -> Result<Config, ConfigError> {
+    let pct = |s| VatPercent::parse(s).unwrap();
+    Config::new(
+        Company {
+            org_number: OrgNumber::parse("XXXXXX-XXXX").unwrap(),
+            name: "Exempelbutiken AB".to_owned(),
+        },
+        FiscalYear::new(date("2026-01-01"), date("2026-12-31"), &[]).unwrap(),
+        SeriesConfig {
+            default: Series::parse("A").unwrap(),
+            start_number: NonZeroU32::MIN,
+        },
+        accounts,
+        Returns::ReverseOriginal,
+        VatConfig {
+            rates: VatRates {
+                se: SeRates {
+                    standard: pct("25"),
+                    reduced12: pct("12"),
+                    reduced6: pct("6"),
+                },
+            },
+        },
+    )
+}
+
+#[test]
+fn every_role_admits_exactly_its_class_over_every_account() {
+    let base = parse(MINIMAL).unwrap().accounts().clone();
+    for (key, expected) in ROLES {
+        for n in 1000..=8999 {
+            let account = AccountNumber::try_from(n).unwrap();
+            let mut accounts = base.clone();
+            assign(&mut accounts, key, account);
+            let shared = accounts.receivable[&stripe()] == accounts.bank;
+            let result = build(accounts);
+            let want = if !digit_allows(expected, n) {
+                Err(ConfigError::WrongAccountClass {
+                    key: key.to_owned(),
+                    account,
+                    expected,
+                })
+            } else if shared {
+                Err(ConfigError::BankIsReceivable {
+                    provider: stripe(),
+                    account,
+                })
+            } else {
+                Ok(())
+            };
+            assert_eq!(result.map(|_| ()), want, "{key} = {n}");
+        }
+    }
+}
+
+#[test]
+fn role_errors_name_the_key_and_both_classes() {
+    let bad = MINIMAL.replace("provider_fee = \"6570\"", "provider_fee = \"2611\"");
+    let e = parse(&bad).unwrap_err().to_string();
+    assert!(
+        e.contains("`accounts.provider_fee` is 2611, which is in class 2 (equity and liabilities); this role needs classes 4–7 (expenses)"),
+        "{e}"
+    );
+    let shared = MINIMAL.replace("stripe = \"1580\"", "stripe = \"1930\"");
+    let e = parse(&shared).unwrap_err().to_string();
+    assert!(
+        e.contains("`accounts.bank` and `accounts.receivable.stripe` are both 1930"),
+        "{e}"
+    );
 }
