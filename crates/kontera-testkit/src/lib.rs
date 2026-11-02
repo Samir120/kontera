@@ -60,6 +60,11 @@ pub struct VatRates {
 
 impl VatRates {
     /// The percentage for a rate class. `Zero` is zero by definition.
+    ///
+    /// # Panics
+    ///
+    /// On `Destination`, which the generator never emits: it is `SeDomestic`
+    /// only until T9, which removes this type.
     #[must_use]
     pub fn percent(&self, rate: VatRate) -> Decimal {
         match rate {
@@ -67,6 +72,7 @@ impl VatRates {
             VatRate::Reduced12 => self.reduced12,
             VatRate::Reduced6 => self.reduced6,
             VatRate::Zero => Decimal::ZERO,
+            VatRate::Destination(_) => panic!("the generator emits SeDomestic only"),
         }
     }
 }

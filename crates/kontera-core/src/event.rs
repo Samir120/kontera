@@ -13,6 +13,10 @@
 //! Two amounts carry a sign constraint — a sale line is never negative, a fee
 //! is strictly positive — and each is the one private field of its struct, so
 //! the constructor is the only way in and a JSON goes through it too.
+//!
+//! Every object on the wire is strict: an unknown field is an error, never
+//! dropped (ADR-0006 §4). A field this reader doesn't know could change what
+//! the event means.
 
 use std::fmt;
 use std::str::FromStr;
@@ -21,12 +25,14 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::money::Money;
+use crate::vat::VatPercent;
 
 /// The version of the event schema this crate reads and writes.
 ///
 /// Independent of the crate version (ADR-0005). Bumped only on a breaking
 /// change to the wire form; the deserialiser then supports this version and
-/// the one before it.
+/// the one before it. Version 1 freezes at the first published release that
+/// can parse events (ADR-0006 §5).
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 /// Why a value could not become one of the event types.
@@ -325,13 +331,19 @@ impl<'de> Deserialize<'de> for VatNumber {
     }
 }
 
-/// The Swedish VAT rate a sale line is subject to (docs/02 §3).
+/// The VAT rate a sale line is subject to (docs/02 §3): a Swedish class, or
+/// the percentage the checkout charged at the destination (ADR-0006).
 ///
-/// A *classification*, not a number: the percentage each variant maps to is
-/// supplied by the host in `[vat.rates]` (docs/04 §3) and applied in
-/// `vat.rs`. Hardcoding `25` here would put regulated data in a type.
+/// The Swedish variants are a *classification*, not a number: the percentage
+/// each maps to is supplied by the host in `[vat.rates.se]` (docs/04 §3) and
+/// applied in `vat.rs`. Hardcoding `25` here would put regulated data in a
+/// type. [`VatRate::Destination`] carries a number because the checkout's
+/// figures are authoritative (docs/04 §2.1) and Swedish classes don't line up
+/// with other countries' rates.
+///
 /// Wire form is `snake_case`: `"standard"`, `"reduced12"`, `"reduced6"`,
-/// `"zero"` — the same spellings as the config keys.
+/// `"zero"` — the same spellings as the config keys — or
+/// `{"destination":"19.00"}`.
 ///
 /// Never add a wildcard arm over this enum (docs/08 §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -345,6 +357,8 @@ pub enum VatRate {
     Reduced6,
     /// Zero-rated. Distinct from exempt, which is out of scope (docs/02 §3).
     Zero,
+    /// The percentage charged on an OSS sale. Never zero: see [`VatPercent`].
+    Destination(VatPercent),
 }
 
 /// Whether a sale line is goods or a service. Affects EU treatment
@@ -387,33 +401,56 @@ pub enum FeeKind {
 /// `{"kind":"business", "vat_number":"SE556000000001"}`. The host asserts the
 /// status; the crate records it.
 ///
+/// Deserialises through a private wire enum: serde ignores
+/// `deny_unknown_fields` on a unit variant of an internally tagged enum, so
+/// `{"kind":"consumer","typo":1}` would otherwise parse.
+///
 /// Never add a wildcard arm over this enum (docs/08 §6).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", from = "BuyerTaxStatusWire")]
 pub enum BuyerTaxStatus {
     /// A private individual. Destination-rate VAT applies within the EU.
     Consumer,
-    /// A VAT-registered business. Reverse charge applies withing the EU.
+    /// A VAT-registered business. Reverse charge applies within the EU.
     Business {
-        /// The buyer's VAT number, as validity by the host.
+        /// The buyer's VAT number, as validated by the host.
         vat_number: VatNumber,
     },
+}
+
+/// The wire shape of [`BuyerTaxStatus`]. `Consumer` is an empty struct
+/// variant so that `deny_unknown_fields` reaches it.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum BuyerTaxStatusWire {
+    Consumer {},
+    Business { vat_number: VatNumber },
+}
+
+impl From<BuyerTaxStatusWire> for BuyerTaxStatus {
+    fn from(w: BuyerTaxStatusWire) -> BuyerTaxStatus {
+        match w {
+            BuyerTaxStatusWire::Consumer {} => BuyerTaxStatus::Consumer,
+            BuyerTaxStatusWire::Business { vat_number } => BuyerTaxStatus::Business { vat_number },
+        }
+    }
 }
 
 /// One line of a sale or refund (docs/04 §2).
 ///
 /// `amount_excl_vat` is the net figure the host's checkout computed, never
 /// backed out of a gross by division (docs/04 §2.1), and it is not negative:
-/// a negative line is a refund, and refund are their own event. That one
+/// a negative line is a refund, and refunds are their own event. That one
 /// field is private so [`SaleLine::new`] is the only way in; the other three
 /// are proven types and stay public.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "SaleLineWire")]
 pub struct SaleLine {
-    /// What was sold. Free text; may reach teh SIE output.
+    /// What was sold. Free text; may reach the SIE output.
     pub description: String,
     amount_excl_vat: Money,
-    /// The rate this line is taxed at.
+    /// The rate this line is taxed at: a Swedish class, or the percentage
+    /// charged at the destination.
     pub vat_rate: VatRate,
     /// Goods or services — decides EU treatment.
     pub goods_or_services: SupplyKind,
@@ -455,6 +492,7 @@ impl SaleLine {
 
 /// The wire shape of [`SaleLine`], before the sign check.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SaleLineWire {
     description: String,
     amount_excl_vat: Money,
@@ -478,6 +516,7 @@ impl TryFrom<SaleLineWire> for SaleLine {
 /// A customer's payment was captured (docs/02 §5). The accounting event for
 /// a sale — an order that is never paid produces no bookkeeping.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SaleCaptured {
     /// Host-assigned, unique across the log.
     pub id: EventId,
@@ -487,16 +526,17 @@ pub struct SaleCaptured {
     pub provider: ProviderId,
     /// Consumer or business.
     pub buyer: BuyerTaxStatus,
-    /// Description country, ISO 3166-1 alpha-2. Decides the VAT scenario.
+    /// Destination country, ISO 3166-1 alpha-2. Decides the VAT scenario.
     pub ship_to: CountryCode,
     /// What was sold, net of VAT.
     pub lines: Vec<SaleLine>,
 }
 
-/// Money was returned to a customer (docs/02 §5). Carrier lines, not a
-/// total: a partial refund of mixed-VAT order cannot be apportioned from a
+/// Money was returned to a customer (docs/02 §5). Carries lines, not a
+/// total: a partial refund of a mixed-VAT order cannot be apportioned from a
 /// total alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefundIssued {
     /// Host-assigned, unique across the log.
     pub id: EventId,
@@ -560,6 +600,7 @@ impl FeeCharged {
 
 /// The wire shape of [`FeeCharged`], before the sign check.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FeeChargedWire {
     id: EventId,
     at: NaiveDate,
@@ -579,11 +620,12 @@ impl TryFrom<FeeChargedWire> for FeeCharged {
 /// A provider transferred a net amount to the bank (docs/02 §5).
 ///
 /// `covers` is explicit: the host has the provider's settlement report and
-/// says which event this payout nets together. The library never guesses
-/// (docs/04 §2.1). `amount` is unconstructed — a provider can net to a
+/// says which events this payout nets together. The library never guesses
+/// (docs/04 §2.1). `amount` is unconstrained — a provider can net to a
 /// negative payout — and whether it reconciles is invariant I2, checked by
 /// `settle`, not by the type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PayoutSettled {
     /// Host-assigned, unique across the log.
     pub id: EventId,

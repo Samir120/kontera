@@ -11,7 +11,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use rust_decimal::Decimal;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Why a value could not become one of the VAT types.
 ///
@@ -36,14 +36,13 @@ pub enum VatError {
 /// greater than zero. The grammar alone keeps it below 100, so no input can
 /// overflow a `Decimal`. No sign, exponent or whitespace.
 ///
-/// Zero is rejected for now. Every rate v0.1 configures is a positive Swedish
-/// rate, and zero-rating is the `VatRate::Zero` class, not a configured
-/// number. Whether a destination country's zero rate is a `VatPercent` is
-/// ADR-0006's call (T13).
+/// Zero is rejected (ADR-0006 §2). Zero has one spelling, the `VatRate::Zero`
+/// class, and a destination zero rate is not an OSS sale at 0 %: it is a
+/// different treatment that v0.1 refuses.
 ///
 /// Stored at scale 2, so `"25"` and `"25.00"` are one value and display the
-/// same. Deserialises from a string only: a TOML or JSON number is a float in
-/// most parsers (ADR-0002).
+/// same. Serialises as that string, and deserialises from a string only: a
+/// TOML or JSON number is a float in most parsers (ADR-0002).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VatPercent(Decimal);
 
@@ -88,6 +87,12 @@ impl FromStr for VatPercent {
 impl fmt::Display for VatPercent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Serialize for VatPercent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

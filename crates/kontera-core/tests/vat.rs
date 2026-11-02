@@ -73,3 +73,11 @@ fn vat_percent_deserialises_from_a_string_only() {
     assert!(serde_json::from_str::<VatPercent>("25").is_err());
     assert!(serde_json::from_str::<VatPercent>("25.0").is_err());
 }
+
+#[test]
+fn vat_percent_serialises_at_scale_two_and_round_trips() {
+    let p: VatPercent = serde_json::from_str(r#""25""#).unwrap();
+    assert_eq!(serde_json::to_string(&p).unwrap(), r#""25.00""#);
+    let back: VatPercent = serde_json::from_str(r#""25.00""#).unwrap();
+    assert_eq!(back, p);
+}
