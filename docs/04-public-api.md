@@ -24,7 +24,8 @@ valid UTF-8. See [ADR-0003](adr/0003-sie-4i-output.md).
 ## 2. Event schema v1
 
 Serde-compatible. JSON Lines on the wire; `#[serde(tag = "type")]` internally
-tagged. `EVENT_SCHEMA_VERSION` is `1`.
+tagged. `EVENT_SCHEMA_VERSION` is `1`. Every object is strict: an unknown field
+is an error, never dropped ([ADR-0006](adr/0006-oss-charged-percentage.md) §4).
 
 ```rust
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
@@ -75,7 +76,7 @@ pub struct PayoutSettled {
 pub struct SaleLine {
     pub description: String,
     amount_excl_vat: Money,            // private: non-negative, via SaleLine::new
-    pub vat_rate: VatRate,             // Standard | Reduced12 | Reduced6 | Zero
+    pub vat_rate: VatRate,             // Standard | Reduced12 | Reduced6 | Zero | Destination(VatPercent)
     pub goods_or_services: SupplyKind, // Goods | Services
 }
 
@@ -87,8 +88,14 @@ pub enum BuyerTaxStatus {
 ```
 
 Enum wire forms are `snake_case` and match the config keys in §3 exactly:
-`"standard"`, `"reduced12"`, `"reduced6"`, `"zero"`. `VatRate` carries no
-percentage — the number comes from `[vat.rates.se]` and is applied in `vat.rs`.
+`"standard"`, `"reduced12"`, `"reduced6"`, `"zero"`. These Swedish classes carry
+no percentage — the number comes from `[vat.rates.se]` and is applied in
+`vat.rs`.
+
+An OSS line has no Swedish class. It carries the percentage the checkout charged:
+`{"destination":"19.00"}`. A line holds a class or a percentage, never both.
+Which is valid depends on the sale's scenario, which `vat.rs` decides
+([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
 
 ### 2.1 Design notes
 
@@ -122,9 +129,14 @@ percentage — the number comes from `[vat.rates.se]` and is applied in `vat.rs`
 
 ```jsonl
 {"type":"sale_captured","id":"ord_1001","at":"2026-01-05","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"SE","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":"standard","goods_or_services":"goods"}]}
+{"type":"sale_captured","id":"ord_1002","at":"2026-01-06","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"XX","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":{"destination":"20.00"},"goods_or_services":"goods"}]}
 {"type":"fee_charged","id":"fee_2026_01_08","at":"2026-01-08","provider":"stripe","kind":"transaction","amount":"1168.00"}
 {"type":"payout_settled","id":"po_9001","at":"2026-01-08","provider":"stripe","amount":"47832.00","covers":["ord_1001","fee_2026_01_08"]}
 ```
+
+`XX` is a placeholder, like the org number in §3. This block is parsed by a test
+(`kontera-testkit/tests/docs_04_event_example.rs`), so it cannot drift from the
+types.
 
 ## 3. Config schema v1 (TOML)
 
@@ -182,6 +194,9 @@ strategy = "reverse_original"    # the only strategy until Q2 is answered
 standard  = "25.00"
 reduced12 = "12.00"
 reduced6  = "6.00"
+
+[vat.rates.oss]                  # one line per country you sell to; XX is a placeholder
+XX = ["20.00", "10.00"]
 ```
 
 This block is parsed by a test (`kontera-testkit/tests/docs_04_config_example.rs`),
@@ -191,8 +206,8 @@ so it cannot drift from the types.
 `[series]`, `accounts.bank`, `accounts.provider_fee`, `[accounts.receivable]`
 (it may be empty), and all three keys of `[vat.rates.se]`. **Optional:**
 `closed_periods`, every key under `[accounts.sales]` and
-`[accounts.vat_payable]`, and `[returns]`, which defaults to
-`reverse_original`.
+`[accounts.vat_payable]`, `[returns]`, which defaults to `reverse_original`, and
+`[vat.rates.oss]`.
 
 **Strict.** An unknown key at any level is an error, so a typo is never a
 silent `None`. Account numbers and rates are strings only: `bank = 1930` and
@@ -200,6 +215,15 @@ silent `None`. Account numbers and rates are strings only: `bank = 1930` and
 identifier and a float for a rate (ADR-0002). The `[*.se]` keys are the
 `VatRate` wire forms from §2. `zero` has no key: a zero-rated line takes its
 accounts from its scenario.
+
+**`[vat.rates.oss]`** lists the rates valid for each destination country
+([ADR-0006](adr/0006-oss-charged-percentage.md) §3). It validates and never
+supplies: the number posted is always the one on the line, so this table can
+refuse a posting but cannot change one. A country not listed has no valid rates.
+A rate listed twice, `["20", "20.00"]` included, is
+`ConfigError::DuplicateOssRate`. Zero is not a valid rate: a destination zero
+rate is a `ScenarioGap`. The host maintains this table, and the library ships no
+rate data.
 
 **Checked when the config is read**, before `post()` runs:
 
@@ -278,7 +302,7 @@ constructs is untestable beyond its message. `Unbalanced` lives in
 is detected, so that is where it is defined.
 
 Two error enums sit outside `PostingError`: `ConfigError` (schema version,
-fiscal year, months, org number, account roles — §3) and `VatError`
+fiscal year, months, org number, account roles, OSS rates — §3) and `VatError`
 (`VatPercent`). Both are raised while the host deserialises its config,
 before `post()` is called — `post()` takes an already-proven `&Config` — so
 no path through `post()` produces them, and nesting them would add variants
@@ -292,9 +316,15 @@ thing a human needs, and it is usually a fee the host forgot to emit.
 
 `ScenarioGap` is an enum, not a string: `VatExemptMerchant`, `GiftCard`,
 `ConstructionReverseCharge`, `PrepaymentVatPoint`, `NonEuNonSeSpecialScheme`,
-`MultiCurrency`. This turns the v0.1 non-goals into machine-readable output —
-the host can tell the merchant exactly which orders need manual handling instead
-of failing opaquely.
+`MultiCurrency`, plus destination zero-rating (T9 names that variant). This turns
+the v0.1 non-goals into machine-readable output — the host can tell the merchant
+exactly which orders need manual handling instead of failing opaquely.
+
+Only an unsupported treatment is a gap. A line inconsistent with its scenario,
+or a destination rate not listed in `[vat.rates.oss]`, is an inconsistent event
+or a config mismatch. Those are separate `PostingError` leaves, because reporting
+them to the merchant as "handle manually" would hide platform bugs
+([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
 
 **`post()` never panics on any input.** Fuzz-tested. See
 [05](05-testing-strategy.md).
@@ -360,6 +390,11 @@ Amounts: debit positive, credit negative, two decimals, `.` separator. Dates
 **The event schema version is independent of the crate version.** A patch release
 must never change the schema; a schema bump does not force a major crate bump if
 the Rust API is unchanged. See [ADR-0005](adr/0005-event-schema-versioning.md).
+
+**Both schemas freeze at the first published release that can parse events**; a
+stub publish reserving the name doesn't count. Until then, changing v1 takes an
+ADR and a `schema:` commit. After it, every wire addition is a bump, because
+strict readers refuse it ([ADR-0006](adr/0006-oss-charged-percentage.md) §5).
 
 Pre-1.0, the Rust API may change freely. The event schema may not — hosts have
 persisted events on disk, and they are räkenskapsinformation subject to seven-year

@@ -236,7 +236,7 @@ Dev-dependencies are outside that list — they are not in the shipped crate's
 tree, but each still needs a reason. Current: `proptest`, `serde_json`
 (JSON-boundary tests and, later, the fuzz targets), `toml` (config tests parse
 TOML the way a host does; `kontera-testkit` also uses it to parse the 04 §3
-example), `kontera-testkit`.
+example, and `serde_json` to parse the 04 §2.2 example), `kontera-testkit`.
 
 `kontera-core` may not: perform I/O, use `async`, use `unsafe`, call
 `SystemTime::now()`, or panic on any input reachable from `post()`.

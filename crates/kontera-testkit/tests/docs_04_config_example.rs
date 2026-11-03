@@ -5,7 +5,9 @@
 //! not in `kontera-core`, because `include_str!` reaching out of the crate to
 //! `docs/` breaks the tests of a packaged crate. Testkit is never published.
 
-use kontera_core::{AccountNumber, Config, Month, Returns, SeRates, VatPercent};
+use std::collections::{BTreeMap, BTreeSet};
+
+use kontera_core::{AccountNumber, Config, CountryCode, Month, Returns, SeRates, VatPercent};
 
 const DOC: &str = include_str!("../../../docs/04-public-api.md");
 
@@ -85,6 +87,12 @@ fn the_docs_04_config_example_parses_to_exactly_its_values() {
         reduced6: pct("6.00"),
     };
     assert_eq!(c.vat().rates.se, rates);
+
+    let oss = BTreeMap::from([(
+        CountryCode::parse("XX").unwrap(),
+        BTreeSet::from([pct("20.00"), pct("10.00")]),
+    )]);
+    assert_eq!(c.vat().rates.oss, oss);
 }
 
 /// No real BAS number may stand in for an OSS account (02 §4, Q8). The

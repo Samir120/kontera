@@ -483,7 +483,7 @@ impl SaleLine {
         })
     }
 
-    /// The wire shape of [`SaleLine`], before the sign check.
+    /// The net amount, proven non-negative.
     #[must_use]
     pub const fn amount_excl_vat(&self) -> Money {
         self.amount_excl_vat
@@ -845,45 +845,6 @@ mod tests {
         assert!(serde_json::from_str::<VatRate>(r#""Standard""#).is_err());
         assert!(serde_json::from_str::<VatRate>(r#""25""#).is_err());
         assert!(serde_json::from_str::<VatRate>("25").is_err());
-    }
-
-    #[test]
-    fn docs_04_example_lines_round_trip_byte_for_byte() {
-        // The three JSONL lines from docs/04 §2.2, verbatim. Field order in
-        // the structure matches the document, so serilaising back must give
-        // the same bytes — that ties the code to the contract.
-        let sale = r#"{"type":"sale_captured","id":"ord_1001","at":"2026-01-05","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"SE","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":"standard","goods_or_services":"goods"}]}"#;
-        let fee = r#"{"type":"fee_charged","id":"fee_2026_01_08","at":"2026-01-08","provider":"stripe","kind":"transaction","amount":"1168.00"}"#;
-        let payout = r#"{"type":"payout_settled","id":"po_9001","at":"2026-01-08","provider":"stripe","amount":"47832.00","covers":["ord_1001","fee_2026_01_08"]}"#;
-
-        for line in [sale, fee, payout] {
-            let event: Event = serde_json::from_str(line).unwrap();
-            assert_eq!(serde_json::to_string(&event).unwrap(), line);
-        }
-
-        let Event::SaleCaptured(s) = serde_json::from_str::<Event>(sale).unwrap() else {
-            panic!("tag `sale_captured` must produce SaleCaptured");
-        };
-        assert_eq!(s.id, EventId::parse("ord_1001").unwrap());
-        assert_eq!(s.at, date(2026, 1, 5));
-        assert_eq!(s.buyer, BuyerTaxStatus::Consumer);
-        assert_eq!(s.ship_to, CountryCode::SE);
-        assert_eq!(s.lines.len(), 1);
-        assert_eq!(s.lines[0].amount_excl_vat(), kr("1000.00"));
-        assert_eq!(s.lines[0].vat_rate, VatRate::Standard);
-
-        let Event::FeeCharged(f) = serde_json::from_str::<Event>(fee).unwrap() else {
-            panic!("tag `fee_charged` must produce FeeCharged");
-        };
-        assert_eq!(f.kind, FeeKind::Transaction);
-        assert_eq!(f.amount, kr("1168.00"));
-
-        let Event::PayoutSettled(p) = serde_json::from_str::<Event>(payout).unwrap() else {
-            panic!("tag `payout_settled` must produce PayoutSettled");
-        };
-        assert_eq!(p.amount, kr("47832.00"));
-        assert_eq!(p.covers.len(), 2);
-        assert_eq!(p.covers[1], EventId::parse("fee_2026_01_08").unwrap());
     }
 
     #[test]

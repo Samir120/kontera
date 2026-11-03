@@ -4,14 +4,17 @@
 //! string, a domain small enough to enumerate. `FiscalYear::new` is checked
 //! against its rules restated as an independent predicate. The `Config` tree
 //! is parsed from TOML, as a host would, and its role-vs-class rules are
-//! proven over every account number for every role.
+//! proven over every account number for every role. `[vat.rates.oss]` is
+//! checked against a reference for repeated rates, in both spellings.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use chrono::{Datelike, Days, Months, NaiveDate};
 use kontera_core::{
-    AccountKind, AccountNumber, Accounts, Company, Config, ConfigError, FiscalYear, Month,
-    OrgNumber, ProviderId, Returns, SeRates, Series, SeriesConfig, VatConfig, VatPercent, VatRates,
+    AccountKind, AccountNumber, Accounts, Company, Config, ConfigError, CountryCode, FiscalYear,
+    Month, OrgNumber, ProviderId, Returns, SeRates, Series, SeriesConfig, VatConfig, VatPercent,
+    VatRates,
 };
 use proptest::prelude::*;
 
@@ -239,6 +242,9 @@ strategy = "reverse_original"
 standard = "25.00"
 reduced12 = "12.00"
 reduced6 = "6.00"
+
+[vat.rates.oss]
+XX = ["20.00", "10.00"]
 "#;
 
 fn parse(toml: &str) -> Result<Config, toml::de::Error> {
@@ -292,6 +298,7 @@ fn a_full_config_reads_every_key() {
     assert_eq!(a.vat_payable.eu_b2c_oss, Some(konto("2999")));
     assert_eq!(c.fiscal_year().closed_periods().len(), 1);
     assert_eq!(c.company().name, "Exempelbutiken AB");
+    assert_eq!(c.vat().rates.oss.len(), 1);
 }
 
 #[test]
@@ -309,7 +316,7 @@ fn schema_version_must_be_present_and_equal_to_one() {
 #[test]
 fn an_unknown_key_is_rejected_at_every_level() {
     let headers: Vec<&str> = FULL.lines().filter(|l| l.starts_with('[')).collect();
-    assert_eq!(headers.len(), 11, "every explicit table in FULL is covered");
+    assert_eq!(headers.len(), 12, "every explicit table in FULL is covered");
     let top = format!("typo = \"1\"\n{FULL}");
     assert!(parse(&top).is_err(), "top level");
     // `[vat]` and `[vat.rates]` exist only implicitly in FULL; TOML lets a
@@ -431,6 +438,7 @@ fn build(accounts: Accounts) -> Result<Config, ConfigError> {
                     reduced12: pct("12"),
                     reduced6: pct("6"),
                 },
+                oss: BTreeMap::new(),
             },
         },
     )
@@ -479,4 +487,95 @@ fn role_errors_name_the_key_and_both_classes() {
         e.contains("`accounts.bank` and `accounts.receivable.stripe` are both 1930"),
         "{e}"
     );
+}
+
+/// `MINIMAL` with `table` as the body of `[vat.rates.oss]`.
+fn with_oss(table: &str) -> String {
+    format!("{MINIMAL}\n[vat.rates.oss]\n{table}\n")
+}
+
+fn pct(s: &str) -> VatPercent {
+    VatPercent::parse(s).unwrap()
+}
+
+#[test]
+fn oss_rates_are_optional() {
+    assert!(parse(MINIMAL).unwrap().vat().rates.oss.is_empty());
+    assert!(parse(&with_oss("")).unwrap().vat().rates.oss.is_empty());
+}
+
+#[test]
+fn oss_rates_are_read_per_country_and_either_spelling_is_one_value() {
+    let c = parse(&with_oss("XX = [\"20\", \"10.50\"]\nYY = []")).unwrap();
+    let want = BTreeMap::from([
+        (
+            CountryCode::parse("XX").unwrap(),
+            BTreeSet::from([pct("10.5"), pct("20.00")]),
+        ),
+        (CountryCode::parse("YY").unwrap(), BTreeSet::new()),
+    ]);
+    assert_eq!(c.vat().rates.oss, want);
+}
+
+#[test]
+fn oss_rates_refuse_what_is_not_a_country_and_a_list_of_rates() {
+    for table in [
+        "XX = [\"0\"]",
+        "XX = [\"0.00\"]",
+        "XX = [\"100\"]",
+        "XX = [20]",
+        "XX = [20.0]",
+        "XX = \"20.00\"",
+        "xx = [\"20\"]",
+        "XXX = [\"20\"]",
+    ] {
+        assert!(parse(&with_oss(table)).is_err(), "{table}");
+    }
+}
+
+#[test]
+fn a_repeated_oss_rate_names_the_country_and_the_rate() {
+    let e = parse(&with_oss("XX = [\"20\", \"10\", \"20.00\"]"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("`vat.rates.oss.XX` lists 20.00 more than once; remove the duplicate"),
+        "{e}"
+    );
+}
+
+proptest! {
+    /// Accepted exactly when no rate repeats, across spellings. A narrow
+    /// range of percentages, so repeats are common.
+    #[test]
+    fn an_oss_list_is_accepted_exactly_when_no_rate_repeats(
+        list in prop::collection::vec((1u32..=6, any::<bool>()), 0..6)
+    ) {
+        let spelled: Vec<String> = list
+            .iter()
+            .map(|(n, short)| {
+                if *short {
+                    format!("\"{n}\"")
+                } else {
+                    format!("\"{n}.00\"")
+                }
+            })
+            .collect();
+        let mut seen = BTreeSet::new();
+        let repeat = list.iter().map(|(n, _)| *n).find(|n| !seen.insert(*n));
+
+        let parsed = parse(&with_oss(&format!("XX = [{}]", spelled.join(", "))));
+        match (parsed, repeat) {
+            (Ok(c), None) => {
+                let code = CountryCode::parse("XX").unwrap();
+                prop_assert_eq!(c.vat().rates.oss[&code].len(), seen.len());
+            }
+            (Err(e), Some(n)) => {
+                let message = format!("lists {n}.00 more than once");
+                prop_assert!(e.to_string().contains(&message), "{}", e);
+            }
+            (Ok(_), Some(n)) => prop_assert!(false, "{n} repeats but the list parsed"),
+            (Err(e), None) => prop_assert!(false, "no repeat, yet: {}", e),
+        }
+    }
 }

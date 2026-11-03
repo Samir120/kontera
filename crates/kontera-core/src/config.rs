@@ -18,7 +18,7 @@ use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Deserializer};
 
 use crate::account::{AccountKind, AccountNumber};
-use crate::event::ProviderId;
+use crate::event::{CountryCode, ProviderId};
 use crate::vat::VatPercent;
 use crate::verification::Series;
 
@@ -98,6 +98,14 @@ pub enum ConfigError {
         provider: ProviderId,
         /// The shared account.
         account: AccountNumber,
+    },
+    /// A country's list in `[vat.rates.oss]` repeats a rate.
+    #[error("`vat.rates.oss.{country}` lists {percent} more than once; remove the duplicate")]
+    DuplicateOssRate {
+        /// The country whose list repeats the rate.
+        country: CountryCode,
+        /// The repeated rate.
+        percent: VatPercent,
     },
 }
 
@@ -644,10 +652,45 @@ pub struct VatConfig {
     pub rates: VatRates,
 }
 
-/// `[vat.rates]`. The OSS table joins this in ADR-0006 (T13).
+/// `[vat.rates]`.
+///
+/// Deserialises through a private wire struct, because a repeated rate must
+/// be seen before a set collapses it. A value with public fields can't hold a
+/// repeat, so what the wire proves still holds for one built by hand.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "VatRatesWire")]
 pub struct VatRates {
     /// Swedish rates per class, all three required.
     pub se: SeRates<VatPercent>,
+    /// `[vat.rates.oss]`: the rates valid for each destination country, for
+    /// checking what an OSS line carries (ADR-0006 §3). It validates and
+    /// never supplies: the number posted is always the one on the line.
+    pub oss: BTreeMap<CountryCode, BTreeSet<VatPercent>>,
+}
+
+/// The wire shape of [`VatRates`], before the duplicate check.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VatRatesWire {
+    se: SeRates<VatPercent>,
+    #[serde(default)]
+    oss: BTreeMap<CountryCode, Vec<VatPercent>>,
+}
+
+impl TryFrom<VatRatesWire> for VatRates {
+    type Error = ConfigError;
+
+    fn try_from(w: VatRatesWire) -> Result<VatRates, ConfigError> {
+        let mut oss = BTreeMap::new();
+        for (country, listed) in w.oss {
+            let mut rates = BTreeSet::new();
+            for percent in listed {
+                if !rates.insert(percent) {
+                    return Err(ConfigError::DuplicateOssRate { country, percent });
+                }
+            }
+            oss.insert(country, rates);
+        }
+        Ok(VatRates { se: w.se, oss })
+    }
 }

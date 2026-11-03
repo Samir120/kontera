@@ -144,17 +144,24 @@ Exactly four. Anything else returns `Err(UnsupportedScenario)`.
 |---|---|---|---|---|
 | `SeDomestic` | Sale within Sweden | Ship-to SE | 25% / 12% / 6% | Any |
 | `EuB2bReverse` | EU business, reverse charge | Ship-to EU ≠ SE, valid VAT no. | 0%, buyer accounts | Business |
-| `EuB2cOss` | EU consumer, destination rate | Ship-to EU ≠ SE, no VAT no. | Destination country rate | Consumer |
+| `EuB2cOss` | EU consumer, destination rate | Ship-to EU ≠ SE, no VAT no. | The destination rate the checkout charged, carried on the line ([ADR-0006](adr/0006-oss-charged-percentage.md)) | Consumer |
 | `ExportOutsideEu` | Outside EU | Ship-to non-EU | 0% | Any |
 
 **Deliberately excluded from v0.1:** VAT-exempt merchants under the 120,000 kr
 turnover threshold, multi-purpose vouchers and gift cards, construction reverse
 charge, margin schemes, prepayments where the VAT point differs from delivery,
-VOEC (Norway) and UK schemes. Each is a real scenario. Each is `Err` for now.
+VOEC (Norway) and UK schemes, and destination zero-rating. Each is a real
+scenario. Each is `Err` for now.
 
-> **VERIFY:** the EU B2C rate table must come from a maintained source, not be
-> hardcoded from memory. Rates change. Consider making the rate table part of
-> `Config` so the host can update it without a library release.
+> **VERIFY:** the EU B2C rates in `[vat.rates.oss]` must come from a maintained
+> source, not be hardcoded from memory. Rates change. The table is part of
+> `Config`, so the host updates it without a library release, and the library
+> ships no rates ([ADR-0006](adr/0006-oss-charged-percentage.md) §3).
+
+> **VERIFY (Q10):** the Commission's
+> [OSS guide](https://vat-one-stop-shop.ec.europa.eu/system/files/2021-07/OSS_guidelines_en.pdf)
+> treats supplies at a so-called zero rate like exempt supplies, left out of the
+> OSS return. That is why destination zero-rating is excluded above.
 
 > **VERIFY:** OSS has its own turnover threshold (roughly 99,680 kr for
 > distance selling to EU consumers) below which Swedish VAT may be applied
