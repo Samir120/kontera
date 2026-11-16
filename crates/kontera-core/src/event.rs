@@ -341,6 +341,9 @@ impl<'de> Deserialize<'de> for VatNumber {
 /// figures are authoritative (docs/04 §2.1) and Swedish classes don't line up
 /// with other countries' rates.
 ///
+/// The host picks the class for each line. Which goods sit in which class
+/// moves over time, and the library can't check it (docs/04 §2).
+///
 /// Wire form is `snake_case`: `"standard"`, `"reduced12"`, `"reduced6"`,
 /// `"zero"` — the same spellings as the config keys — or
 /// `{"destination":"19.00"}`.
@@ -351,9 +354,9 @@ impl<'de> Deserialize<'de> for VatNumber {
 pub enum VatRate {
     /// The standard rate — 25 % in Sweden.
     Standard,
-    /// The first reduced rate — 12 % in Sweden (food, hotels).
+    /// The first reduced rate — 12 % in Sweden.
     Reduced12,
-    /// The second reduced rate — 6 % in Sweden (books, passenger transport).
+    /// The second reduced rate — 6 % in Sweden.
     Reduced6,
     /// Zero-rated. Distinct from exempt, which is out of scope (docs/02 §3).
     Zero,

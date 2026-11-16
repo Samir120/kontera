@@ -90,7 +90,21 @@ pub enum BuyerTaxStatus {
 Enum wire forms are `snake_case` and match the config keys in §3 exactly:
 `"standard"`, `"reduced12"`, `"reduced6"`, `"zero"`. These Swedish classes carry
 no percentage — the number comes from `[vat.rates.se]` and is applied in
-`vat.rs`.
+`vat.rs`, by `line_vat`.
+
+The host picks the class for each line. Kontera can't tell food from anything
+else, so a line sent in the wrong class posts without an error. Goods also move
+between classes. Food is `reduced6` from 1 April 2026 through 31 December 2027
+and `reduced12` before and after, depending on when the taxable event occurs
+(prop. 2025/26:55;
+[Skatteverket](https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/momssatserochundantagfranmoms),
+page modified 2026-11-02).
+
+> **VERIFY (Q11):** a refund line carries the same `vat_rate` as the sale line it
+> reverses ([ADR-0006](adr/0006-oss-charged-percentage.md) §1), so a refund after
+> 1 April of a March food sale carries `reduced12`. That is this project's rule.
+> Prop. 2025/26:55 doesn't appear to address credit notes or returns across the
+> change. Accountant review has the final word.
 
 An OSS line has no Swedish class. It carries the percentage the checkout charged:
 `{"destination":"19.00"}`. A line holds a class or a percentage, never both.
@@ -190,7 +204,9 @@ reduced6  = "2631"
 [returns]
 strategy = "reverse_original"    # the only strategy until Q2 is answered
 
-[vat.rates.se]                   # host-updatable; rates change. VERIFY (Q7)
+# Host-updatable; rates change. Source: Skatteverket, "Momssatser och undantag
+# från moms", page modified 2026-11-02.
+[vat.rates.se]
 standard  = "25.00"
 reduced12 = "12.00"
 reduced6  = "6.00"

@@ -13,10 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Datelike;
 use kontera_core::{
-    BuyerTaxStatus, CountryCode, Event, EventId, ProviderId, SaleCaptured, SaleLine, SupplyKind,
-    VatRate,
+    BuyerTaxStatus, CountryCode, Event, EventId, ProviderId, SaleCaptured, SaleLine, SeRates,
+    SupplyKind, VatPercent, VatRate,
 };
-use kontera_testkit::{default_test_rates, valid_event_log, VatRates, FISCAL_YEAR};
+use kontera_testkit::{default_test_rates, valid_event_log, FISCAL_YEAR};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
@@ -30,20 +30,33 @@ fn reference_vat(net: i128, percent: Decimal) -> i128 {
     (2 * num + den) / (2 * den)
 }
 
-fn reference_gross(lines: &[SaleLine], rates: &VatRates) -> i128 {
+/// The percentage a line is charged, restated from docs/04 §2.
+fn reference_percent(rate: VatRate, rates: &SeRates<VatPercent>) -> Decimal {
+    match rate {
+        VatRate::Standard => rates.standard.into(),
+        VatRate::Reduced12 => rates.reduced12.into(),
+        VatRate::Reduced6 => rates.reduced6.into(),
+        VatRate::Destination(percent) => percent.into(),
+        VatRate::Zero => Decimal::ZERO,
+    }
+}
+
+fn reference_gross(lines: &[SaleLine], rates: &SeRates<VatPercent>) -> i128 {
     lines
         .iter()
         .map(|l| {
             let net = l.amount_excl_vat().ore();
-            net + reference_vat(net, rates.percent(l.vat_rate))
+            net + reference_vat(net, reference_percent(l.vat_rate, rates))
         })
         .sum()
 }
 
-/// Any rate table with percentages 0.00–100.00, at scale 2 like the config.
-fn arb_rates() -> impl Strategy<Value = VatRates> {
-    let pct = || (0..=10_000i64).prop_map(|bp| Decimal::new(bp, 2));
-    (pct(), pct(), pct()).prop_map(|(standard, reduced12, reduced6)| VatRates {
+/// Any rate table `VatPercent` can hold: 0.01–99.99.
+fn arb_rates() -> impl Strategy<Value = SeRates<VatPercent>> {
+    let pct = || {
+        (1..=9_999i64).prop_map(|bp| VatPercent::parse(&Decimal::new(bp, 2).to_string()).unwrap())
+    };
+    (pct(), pct(), pct()).prop_map(|(standard, reduced12, reduced6)| SeRates {
         standard,
         reduced12,
         reduced6,

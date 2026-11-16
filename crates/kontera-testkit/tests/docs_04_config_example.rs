@@ -87,6 +87,7 @@ fn the_docs_04_config_example_parses_to_exactly_its_values() {
         reduced6: pct("6.00"),
     };
     assert_eq!(c.vat().rates.se, rates);
+    assert_eq!(c.vat().rates.se, kontera_testkit::default_test_rates());
 
     let oss = BTreeMap::from([(
         CountryCode::parse("XX").unwrap(),

@@ -3,15 +3,19 @@
 //! Exactly four scenarios in v0.1. Anything else is `Err`, never a guess
 //! (ADR-0004). Scenario determination lands in T9.
 //!
-//! [`VatPercent`] lives here rather than in `config.rs` because the
-//! `rate × net` multiply that consumes it belongs here, next to
-//! `Money::rounded`, the crate's single rounding site.
+//! [`VatPercent`] lives here rather than in `config.rs` because [`line_vat`],
+//! the `rate × net` multiply that consumes it, belongs here. `Money::rounded`
+//! stays the crate's single rounding site.
 
 use std::fmt;
 use std::str::FromStr;
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::config::SeRates;
+use crate::event::{SaleLine, VatRate};
+use crate::money::{Money, MoneyError};
 
 /// Why a value could not become one of the VAT types.
 ///
@@ -84,6 +88,13 @@ impl FromStr for VatPercent {
     }
 }
 
+/// The value itself: `"25.00"` becomes `25.00`, not `0.25`.
+impl From<VatPercent> for Decimal {
+    fn from(p: VatPercent) -> Decimal {
+        p.0
+    }
+}
+
 impl fmt::Display for VatPercent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
@@ -103,4 +114,35 @@ impl<'de> Deserialize<'de> for VatPercent {
             .parse()
             .map_err(serde::de::Error::custom)
     }
+}
+
+/// The VAT on one line: `net × percent / 100`, rounded half away from zero.
+///
+/// Apply it per line and then sum the lines. Rounding a sum gives a different
+/// number from the one the checkout charged (docs/02 §2.1).
+///
+/// A Swedish class takes its percentage from `se`, the `[vat.rates.se]` table.
+/// [`VatRate::Destination`] uses the percentage on the line. [`VatRate::Zero`]
+/// is no VAT, and has no percentage because [`VatPercent`] can't be zero
+/// (ADR-0006 §2).
+///
+/// This is arithmetic only. It does not check that the rate is valid for the
+/// sale's scenario.
+///
+/// # Errors
+///
+/// None in practice. A percentage is below 100, so the result is never larger
+/// than the net, and the net is a [`Money`], which is already in range. The
+/// `Result` is [`Money::rounded`]'s, and `tests/vat.rs` runs every percentage
+/// at the largest net.
+pub fn line_vat(line: &SaleLine, se: &SeRates<VatPercent>) -> Result<Money, MoneyError> {
+    let percent = match line.vat_rate {
+        VatRate::Standard => se.standard,
+        VatRate::Reduced12 => se.reduced12,
+        VatRate::Reduced6 => se.reduced6,
+        VatRate::Destination(percent) => percent,
+        VatRate::Zero => return Ok(Money::ZERO),
+    };
+    let net = Decimal::from(line.amount_excl_vat());
+    Money::rounded(net * percent.0 / Decimal::ONE_HUNDRED)
 }

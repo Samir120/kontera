@@ -1,12 +1,18 @@
-//! Exhaustive tests for `VatPercent`, over the public API only.
+//! Tests for `VatPercent` and `line_vat`, over the public API only.
 //!
-//! The grammar is restated here as an independent predicate, and the parser
-//! must agree with it on every string of up to five characters drawn from
-//! `0-9` and `.` — 177 156 strings, which covers every accepted value and
-//! every way to misplace a digit or a point. Characters outside that alphabet
-//! are spot-checked.
+//! `VatPercent`'s grammar is restated here as an independent predicate, and
+//! the parser must agree with it on every string of up to five characters
+//! drawn from `0-9` and `.` — 177 156 strings, which covers every accepted
+//! value and every way to misplace a digit or a point. Characters outside
+//! that alphabet are spot-checked.
+//!
+//! `line_vat` is checked against an `i128` reference with its own rounding.
+//! The rate table in these tests is deliberately not Sweden's, so a number
+//! hardcoded in the code would fail them.
 
-use kontera_core::VatPercent;
+use kontera_core::{line_vat, Money, SaleLine, SeRates, SupplyKind, VatPercent, VatRate};
+use proptest::prelude::*;
+use rust_decimal::Decimal;
 
 /// The `VatPercent` grammar, restated: the value in hundredths if accepted.
 fn reference_percent(s: &str) -> Option<u32> {
@@ -80,4 +86,105 @@ fn vat_percent_serialises_at_scale_two_and_round_trips() {
     assert_eq!(serde_json::to_string(&p).unwrap(), r#""25.00""#);
     let back: VatPercent = serde_json::from_str(r#""25.00""#).unwrap();
     assert_eq!(back, p);
+}
+
+/// `bp` hundredths of a percent: `2500` is `25.00`.
+fn pct(bp: i64) -> VatPercent {
+    VatPercent::parse(&Decimal::new(bp, 2).to_string()).unwrap()
+}
+
+fn table() -> SeRates<VatPercent> {
+    SeRates {
+        standard: pct(3100),
+        reduced12: pct(1700),
+        reduced6: pct(300),
+    }
+}
+
+fn line(ore: i64, rate: VatRate) -> SaleLine {
+    SaleLine::new(
+        "x".to_owned(),
+        Money::from_ore(ore),
+        rate,
+        SupplyKind::Goods,
+    )
+    .unwrap()
+}
+
+fn vat(ore: i64, rate: VatRate) -> i128 {
+    line_vat(&line(ore, rate), &table()).unwrap().ore()
+}
+
+/// `net × bp / 10 000` in öre, half away from zero. Net is never negative
+/// here, so half-away is half-up.
+fn reference(net: i64, bp: i64) -> i128 {
+    (2 * i128::from(net) * i128::from(bp) + 10_000) / 20_000
+}
+
+#[test]
+fn each_swedish_class_reads_its_own_key() {
+    assert_eq!(vat(10_000, VatRate::Standard), 3_100);
+    assert_eq!(vat(10_000, VatRate::Reduced12), 1_700);
+    assert_eq!(vat(10_000, VatRate::Reduced6), 300);
+}
+
+/// 19 % is nowhere in the table: the number comes from the line.
+#[test]
+fn a_destination_line_uses_its_own_percentage() {
+    assert_eq!(vat(10_000, VatRate::Destination(pct(1900))), 1_900);
+}
+
+/// Hand-worked, docs/01 §1.1 first: 40 000 kr at 25 % carries 10 000 kr.
+/// Then 0.5 öre up, 0.06 öre down, and 1.5 öre up.
+#[test]
+fn line_vat_matches_hand_worked_cases() {
+    let at = |ore, bp| vat(ore, VatRate::Destination(pct(bp)));
+    assert_eq!(at(4_000_000, 2500), 1_000_000);
+    assert_eq!(at(2, 2500), 1);
+    assert_eq!(at(1, 600), 0);
+    assert_eq!(at(25, 600), 2);
+}
+
+/// Two 2-öre lines at 25 % carry 1 öre each. Rounded on the 4-öre sum, the
+/// same order would carry 1 öre in total (docs/02 §2.1).
+#[test]
+fn rounding_per_line_differs_from_rounding_the_sum() {
+    let at_25 = VatRate::Destination(pct(2500));
+    assert_eq!(vat(2, at_25) + vat(2, at_25), 2);
+    assert_eq!(vat(4, at_25), 1);
+}
+
+/// Every percentage `VatPercent` can hold, including at the largest net, so
+/// `line_vat`'s `Err` is unreachable and nothing overflows.
+#[test]
+fn line_vat_is_proven_over_every_percentage() {
+    for bp in 1..=9_999 {
+        for net in [0, 1, 2, 3, 25, 49, 50, 99, i64::MAX] {
+            assert_eq!(
+                vat(net, VatRate::Destination(pct(bp))),
+                reference(net, bp),
+                "{net} öre at {bp}"
+            );
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn line_vat_agrees_with_the_reference(net in 0..=i64::MAX, bp in 1..=9_999i64) {
+        let rate = VatRate::Destination(pct(bp));
+        prop_assert_eq!(vat(net, rate), reference(net, bp));
+    }
+
+    #[test]
+    fn a_swedish_class_agrees_with_the_reference(net in 0..=i64::MAX) {
+        prop_assert_eq!(vat(net, VatRate::Standard), reference(net, 3100));
+        prop_assert_eq!(vat(net, VatRate::Reduced12), reference(net, 1700));
+        prop_assert_eq!(vat(net, VatRate::Reduced6), reference(net, 300));
+    }
+
+    #[test]
+    fn a_zero_rated_line_carries_no_vat(net in 0..=i64::MAX) {
+        prop_assert_eq!(vat(net, VatRate::Zero), 0);
+    }
 }

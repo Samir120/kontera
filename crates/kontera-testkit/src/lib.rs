@@ -18,11 +18,11 @@
 
 use chrono::NaiveDate;
 use kontera_core::{
-    BuyerTaxStatus, CountryCode, Event, EventId, FeeCharged, FeeKind, Money, PayoutSettled,
-    ProviderId, RefundIssued, SaleCaptured, SaleLine, SupplyKind, VatNumber, VatRate,
+    line_vat, BuyerTaxStatus, CountryCode, Event, EventId, FeeCharged, FeeKind, Money,
+    PayoutSettled, ProviderId, RefundIssued, SaleCaptured, SaleLine, SeRates, SupplyKind,
+    VatNumber, VatPercent, VatRate,
 };
 use proptest::prelude::*;
-use rust_decimal::Decimal;
 
 /// The calendar year every generated event falls in. Matches the
 /// `[fiscal_year]` of the config example (docs/04 §3).
@@ -43,51 +43,15 @@ const BUSINESS_VAT_NUMBER: &str = "SE000000000001";
 /// `i64` öre, so no arithmetic below can overflow.
 const MAX_LINE_ORE: i64 = 1_000_000;
 
-/// Output VAT percentages per rate class: the shape of `[vat.rates]` in the
-/// config schema (docs/04 §3).
-///
-/// A parameter, not a constant, so the generator never hardcodes a regulated
-/// number. Superseded by the real rate table when `Config` lands in M2.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VatRates {
-    /// `se_standard`, in percent.
-    pub standard: Decimal,
-    /// `se_reduced12`, in percent.
-    pub reduced12: Decimal,
-    /// `se_reduced6`, in percent.
-    pub reduced6: Decimal,
-}
-
-impl VatRates {
-    /// The percentage for a rate class. `Zero` is zero by definition.
-    ///
-    /// # Panics
-    ///
-    /// On `Destination`, which the generator never emits: it is `SeDomestic`
-    /// only until T9, which removes this type.
-    #[must_use]
-    pub fn percent(&self, rate: VatRate) -> Decimal {
-        match rate {
-            VatRate::Standard => self.standard,
-            VatRate::Reduced12 => self.reduced12,
-            VatRate::Reduced6 => self.reduced6,
-            VatRate::Zero => Decimal::ZERO,
-            VatRate::Destination(_) => panic!("the generator emits SeDomestic only"),
-        }
-    }
-}
-
-/// The rates of the config example (docs/04 §3). For tests only.
-// VERIFY: 25 / 12 / 6 % are the values in docs/04 §3. Confirm against
-// Mervärdesskattelagen (2023:200) and current Skatteverket guidance before
-// any of them leave test code — in particular which goods sit in which
-// reduced class, which has moved before and may move again.
+/// The `[vat.rates.se]` of the config example (docs/04 §3), for tests only.
+/// `tests/docs_04_config_example.rs` pins the two together.
 #[must_use]
-pub fn default_test_rates() -> VatRates {
-    VatRates {
-        standard: Decimal::new(2500, 2),
-        reduced12: Decimal::new(1200, 2),
-        reduced6: Decimal::new(600, 2),
+pub fn default_test_rates() -> SeRates<VatPercent> {
+    let percent = |s| VatPercent::parse(s).expect("a valid literal");
+    SeRates {
+        standard: percent("25.00"),
+        reduced12: percent("12.00"),
+        reduced6: percent("6.00"),
     }
 }
 
@@ -107,7 +71,7 @@ pub fn default_test_rates() -> VatRates {
 /// and an unsettled tail are added here alongside the rules that post them.
 ///
 /// Events are in generation order. Order carries no meaning (I6).
-pub fn valid_event_log(rates: VatRates) -> impl Strategy<Value = Vec<Event>> {
+pub fn valid_event_log(rates: SeRates<VatPercent>) -> impl Strategy<Value = Vec<Event>> {
     prop::collection::vec(arb_batch(), 1..=4).prop_map(move |batches| build(&batches, rates))
 }
 
@@ -202,7 +166,7 @@ fn arb_batch() -> impl Strategy<Value = BatchPlan> {
         })
 }
 
-fn build(batches: &[BatchPlan], rates: VatRates) -> Vec<Event> {
+fn build(batches: &[BatchPlan], rates: SeRates<VatPercent>) -> Vec<Event> {
     let mut log = Vec::new();
     for (b, batch) in batches.iter().enumerate() {
         let provider = ProviderId::parse(PROVIDERS[batch.provider]).expect("listed ids are valid");
@@ -292,14 +256,11 @@ fn sale_line(plan: &LinePlan, ore: i64) -> SaleLine {
     .expect("generated amounts are never negative")
 }
 
-/// Line VAT: net × percent / 100, rounded half away from zero, per line.
-fn vat(line: &SaleLine, rates: VatRates) -> Money {
-    let net = Decimal::from(line.amount_excl_vat());
-    Money::rounded(net * rates.percent(line.vat_rate) / Decimal::ONE_HUNDRED)
-        .expect("bounded by MAX_LINE_ORE")
+fn vat(line: &SaleLine, rates: SeRates<VatPercent>) -> Money {
+    line_vat(line, &rates).expect("bounded by MAX_LINE_ORE")
 }
 
-fn gross(line: &SaleLine, rates: VatRates) -> Money {
+fn gross(line: &SaleLine, rates: SeRates<VatPercent>) -> Money {
     line.amount_excl_vat() + vat(line, rates)
 }
 

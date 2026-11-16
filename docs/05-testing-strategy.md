@@ -86,12 +86,13 @@ later payout of its provider, payout = Σ gross sales − Σ gross refunds −
 actually occurs.
 
 The generator takes the VAT rate table as a parameter,
-`valid_event_log(rates: VatRates)`, with `default_test_rates()` marked
-**VERIFY**, so no regulated number is hardcoded in test scaffolding. From M2
-the rates come from `Config`. It currently emits `SeDomestic` sales only, all
-settled; cross-border scenarios and an unsettled tail join it alongside the
-rules that post them. Use it from integration tests only — an in-module test
-inside `kontera-core` would see two copies of the crate's types.
+`valid_event_log(rates: SeRates<VatPercent>)`, the shape of `[vat.rates.se]`, and
+computes VAT through `line_vat`, so it holds no percentage of its own.
+`default_test_rates()` is the 04 §3 example, pinned to it by a test. The
+generator currently emits `SeDomestic` sales only, all settled; cross-border
+scenarios and an unsettled tail join it alongside the rules that post them. Use
+it from integration tests only — an in-module test inside `kontera-core` would
+see two copies of the crate's types.
 
 ### 2.2 Rounding
 
