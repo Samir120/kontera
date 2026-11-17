@@ -90,8 +90,8 @@ fn the_docs_04_config_example_parses_to_exactly_its_values() {
     assert_eq!(c.vat().rates.se, kontera_testkit::default_test_rates());
 
     let oss = BTreeMap::from([(
-        CountryCode::parse("XX").unwrap(),
-        BTreeSet::from([pct("20.00"), pct("10.00")]),
+        CountryCode::parse("DE").unwrap(),
+        BTreeSet::from([pct("19.00"), pct("7.00")]),
     )]);
     assert_eq!(c.vat().rates.oss, oss);
 }

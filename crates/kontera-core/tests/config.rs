@@ -5,7 +5,8 @@
 //! against its rules restated as an independent predicate. The `Config` tree
 //! is parsed from TOML, as a host would, and its role-vs-class rules are
 //! proven over every account number for every role. `[vat.rates.oss]` is
-//! checked against a reference for repeated rates, in both spellings.
+//! checked against a reference for repeated rates, in both spellings, and its
+//! keys are checked over all 676 country codes against a list restated here.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
@@ -244,7 +245,7 @@ reduced12 = "12.00"
 reduced6 = "6.00"
 
 [vat.rates.oss]
-XX = ["20.00", "10.00"]
+DE = ["20.00", "10.00"]
 "#;
 
 fn parse(toml: &str) -> Result<Config, toml::de::Error> {
@@ -418,6 +419,13 @@ fn assign(a: &mut Accounts, key: &str, k: AccountNumber) {
 }
 
 fn build(accounts: Accounts) -> Result<Config, ConfigError> {
+    build_with_oss(accounts, BTreeMap::new())
+}
+
+fn build_with_oss(
+    accounts: Accounts,
+    oss: BTreeMap<CountryCode, BTreeSet<VatPercent>>,
+) -> Result<Config, ConfigError> {
     let pct = |s| VatPercent::parse(s).unwrap();
     Config::new(
         Company {
@@ -438,7 +446,7 @@ fn build(accounts: Accounts) -> Result<Config, ConfigError> {
                     reduced12: pct("12"),
                     reduced6: pct("6"),
                 },
-                oss: BTreeMap::new(),
+                oss,
             },
         },
     )
@@ -506,13 +514,13 @@ fn oss_rates_are_optional() {
 
 #[test]
 fn oss_rates_are_read_per_country_and_either_spelling_is_one_value() {
-    let c = parse(&with_oss("XX = [\"20\", \"10.50\"]\nYY = []")).unwrap();
+    let c = parse(&with_oss("DE = [\"20\", \"10.50\"]\nFI = []")).unwrap();
     let want = BTreeMap::from([
         (
-            CountryCode::parse("XX").unwrap(),
+            CountryCode::parse("DE").unwrap(),
             BTreeSet::from([pct("10.5"), pct("20.00")]),
         ),
-        (CountryCode::parse("YY").unwrap(), BTreeSet::new()),
+        (CountryCode::parse("FI").unwrap(), BTreeSet::new()),
     ]);
     assert_eq!(c.vat().rates.oss, want);
 }
@@ -520,14 +528,14 @@ fn oss_rates_are_read_per_country_and_either_spelling_is_one_value() {
 #[test]
 fn oss_rates_refuse_what_is_not_a_country_and_a_list_of_rates() {
     for table in [
-        "XX = [\"0\"]",
-        "XX = [\"0.00\"]",
-        "XX = [\"100\"]",
-        "XX = [20]",
-        "XX = [20.0]",
-        "XX = \"20.00\"",
-        "xx = [\"20\"]",
-        "XXX = [\"20\"]",
+        "DE = [\"0\"]",
+        "DE = [\"0.00\"]",
+        "DE = [\"100\"]",
+        "DE = [20]",
+        "DE = [20.0]",
+        "DE = \"20.00\"",
+        "de = [\"20\"]",
+        "DEU = [\"20\"]",
     ] {
         assert!(parse(&with_oss(table)).is_err(), "{table}");
     }
@@ -535,13 +543,62 @@ fn oss_rates_refuse_what_is_not_a_country_and_a_list_of_rates() {
 
 #[test]
 fn a_repeated_oss_rate_names_the_country_and_the_rate() {
-    let e = parse(&with_oss("XX = [\"20\", \"10\", \"20.00\"]"))
+    let e = parse(&with_oss("DE = [\"20\", \"10\", \"20.00\"]"))
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("`vat.rates.oss.XX` lists 20.00 more than once; remove the duplicate"),
+        e.contains("`vat.rates.oss.DE` lists 20.00 more than once; remove the duplicate"),
         "{e}"
     );
+}
+
+/// Where an OSS sale can ship: the EU's member states without Sweden, plus
+/// Monaco and Northern Ireland. Restated here and not read from `vat.rs`.
+const OSS_DESTINATIONS: [&str; 28] = [
+    "DK", "FI", "DE", "FR", "IT", "ES", "PT", "NL", "BE", "LU", "IE", "AT", "GR", "CY", "MT", "PL",
+    "CZ", "SK", "HU", "SI", "HR", "RO", "BG", "EE", "LV", "LT", "MC", "XI",
+];
+
+#[test]
+fn an_oss_key_is_accepted_exactly_when_an_oss_sale_can_ship_there() {
+    let base = parse(MINIMAL).unwrap().accounts().clone();
+    for a in 'A'..='Z' {
+        for b in 'A'..='Z' {
+            let key = format!("{a}{b}");
+            let country = CountryCode::parse(&key).unwrap();
+            let usable = OSS_DESTINATIONS.contains(&key.as_str());
+            // From TOML, with rates and with an empty list.
+            for list in ["[\"20\"]", "[]"] {
+                let parsed = parse(&with_oss(&format!("{key} = {list}")));
+                assert_eq!(parsed.is_ok(), usable, "{key} = {list}");
+            }
+            // Built by hand, which skips the deserialiser.
+            let oss = BTreeMap::from([(country, BTreeSet::from([pct("20")]))]);
+            let want = if usable {
+                Ok(())
+            } else {
+                Err(ConfigError::NotAnOssDestination { country })
+            };
+            assert_eq!(build_with_oss(base.clone(), oss).map(|_| ()), want, "{key}");
+        }
+    }
+}
+
+#[test]
+fn an_unusable_oss_key_is_named_first_in_key_order() {
+    for (table, named) in [
+        ("SE = [\"25\"]", "SE"),
+        ("GB = [\"20\"]", "GB"),
+        ("AX = [\"25.5\"]", "AX"),
+        ("DE = [\"19\"]\nXX = [\"20\"]\nNO = [\"25\"]", "NO"),
+    ] {
+        let e = parse(&with_oss(table)).unwrap_err().to_string();
+        let message = format!(
+            "`vat.rates.oss.{named}` can never be used: an OSS sale ships to a country in the \
+             EU VAT area other than Sweden; remove it"
+        );
+        assert!(e.contains(&message), "{e}");
+    }
 }
 
 proptest! {
@@ -564,10 +621,10 @@ proptest! {
         let mut seen = BTreeSet::new();
         let repeat = list.iter().map(|(n, _)| *n).find(|n| !seen.insert(*n));
 
-        let parsed = parse(&with_oss(&format!("XX = [{}]", spelled.join(", "))));
+        let parsed = parse(&with_oss(&format!("DE = [{}]", spelled.join(", "))));
         match (parsed, repeat) {
             (Ok(c), None) => {
-                let code = CountryCode::parse("XX").unwrap();
+                let code = CountryCode::parse("DE").unwrap();
                 prop_assert_eq!(c.vat().rates.oss[&code].len(), seen.len());
             }
             (Err(e), Some(n)) => {

@@ -61,10 +61,10 @@ fn the_docs_04_example_lines_mean_what_they_say() {
     let Event::SaleCaptured(o) = parse(oss) else {
         panic!("tag `sale_captured` must produce SaleCaptured");
     };
-    assert_eq!(o.ship_to, CountryCode::parse("XX").unwrap());
+    assert_eq!(o.ship_to, CountryCode::parse("DE").unwrap());
     assert_eq!(
         o.lines[0].vat_rate,
-        VatRate::Destination(VatPercent::parse("20.00").unwrap())
+        VatRate::Destination(VatPercent::parse("19.00").unwrap())
     );
 
     let Event::FeeCharged(f) = parse(fee) else {

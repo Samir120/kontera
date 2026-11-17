@@ -69,7 +69,7 @@ v0.1 has no posting for it, so ADR-0004 applies. Keeping the check also keeps
 
 ```toml
 [vat.rates.oss]
-XX = ["20.00", "10.00"]
+DE = ["19.00", "7.00"]
 ```
 
 `VatRates` gains `oss: BTreeMap<CountryCode, BTreeSet<VatPercent>>`, optional
@@ -84,11 +84,11 @@ and empty by default.
 - **A repeated rate is rejected.** `["20", "20.00"]` is one value twice, which
   usually means one entry was meant to be a different rate. `FiscalYear`'s
   `DuplicateClosedPeriod` is the precedent.
-- **Every non-EU key is rejected, by T9.** Such an entry would never be
-  consulted, and one rule covers them all once T9 has the sourced EU-membership
-  table. `SE` falls under the same rule, since OSS means ship-to ≠ SE (02 §3).
-  The docs use the fictional `XX` until then. T9's rule rejects it, so T9
-  replaces those examples.
+- **A key no OSS sale can ship to is rejected.** That is any code outside the
+  EU VAT area (02 §3.1), and `SE`, since OSS means ship-to ≠ SE (02 §3). Such an
+  entry would never be consulted. It is `ConfigError::NotAnOssDestination`,
+  raised by `Config::new`. The examples used a fictional `XX` until T9 had the
+  sourced table, and now show a real country with rates marked **VERIFY**.
 - **It is not date-effective.** A rate stays listed for as long as a sale at
   that rate can still be refunded.
 

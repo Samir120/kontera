@@ -19,7 +19,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::account::{AccountKind, AccountNumber};
 use crate::event::{CountryCode, ProviderId};
-use crate::vat::VatPercent;
+use crate::vat::{in_eu_vat_area, VatPercent};
 use crate::verification::Series;
 
 /// The config schema version this library reads (docs/04 §7, ADR-0005).
@@ -106,6 +106,12 @@ pub enum ConfigError {
         country: CountryCode,
         /// The repeated rate.
         percent: VatPercent,
+    },
+    /// A key in `[vat.rates.oss]` is a country no OSS sale can ship to.
+    #[error("`vat.rates.oss.{country}` can never be used: an OSS sale ships to a country in the EU VAT area other than Sweden; remove it")]
+    NotAnOssDestination {
+        /// The key: a code outside the EU VAT area, or `SE`.
+        country: CountryCode,
     },
 }
 
@@ -360,6 +366,8 @@ impl Config {
     /// - [`ConfigError::BankIsReceivable`] if `bank` is also a receivable.
     ///   The clearing account must net to zero after a payout (I3), which
     ///   it cannot do if the payout lands in it.
+    /// - [`ConfigError::NotAnOssDestination`] for the first key in
+    ///   `vat.rates.oss` that is outside the EU VAT area or is `SE`.
     pub fn new(
         company: Company,
         fiscal_year: FiscalYear,
@@ -369,6 +377,7 @@ impl Config {
         vat: VatConfig,
     ) -> Result<Config, ConfigError> {
         accounts.check_classes()?;
+        vat.rates.check_oss_destinations()?;
         Ok(Config {
             company,
             fiscal_year,
@@ -666,6 +675,19 @@ pub struct VatRates {
     /// checking what an OSS line carries (ADR-0006 §3). It validates and
     /// never supplies: the number posted is always the one on the line.
     pub oss: BTreeMap<CountryCode, BTreeSet<VatPercent>>,
+}
+
+impl VatRates {
+    /// Every key in `oss` must be a country an OSS sale can ship to: in the
+    /// EU VAT area, and not Sweden (ADR-0006 §3). The fields are public, so
+    /// this runs in [`Config::new`], which every `Config` goes through.
+    fn check_oss_destinations(&self) -> Result<(), ConfigError> {
+        let unusable = |c: &&CountryCode| **c == CountryCode::SE || !in_eu_vat_area(**c);
+        match self.oss.keys().find(unusable) {
+            Some(&country) => Err(ConfigError::NotAnOssDestination { country }),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The wire shape of [`VatRates`], before the duplicate check.

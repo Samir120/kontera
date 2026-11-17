@@ -143,9 +143,9 @@ Exactly four. Anything else returns `Err(UnsupportedScenario)`.
 | ID | Scenario | Condition | VAT | Buyer status |
 |---|---|---|---|---|
 | `SeDomestic` | Sale within Sweden | Ship-to SE | 25% / 12% / 6% | Any |
-| `EuB2bReverse` | EU business, reverse charge | Ship-to EU ≠ SE, valid VAT no. | 0%, buyer accounts | Business |
-| `EuB2cOss` | EU consumer, destination rate | Ship-to EU ≠ SE, no VAT no. | The destination rate the checkout charged, carried on the line ([ADR-0006](adr/0006-oss-charged-percentage.md)) | Consumer |
-| `ExportOutsideEu` | Outside EU | Ship-to non-EU | 0% | Any |
+| `EuB2bReverse` | EU business, reverse charge | Ship-to in the EU VAT area (§3.1), ≠ SE, valid VAT no. | 0%, buyer accounts | Business |
+| `EuB2cOss` | EU consumer, destination rate | Ship-to in the EU VAT area (§3.1), ≠ SE, no VAT no. | The destination rate the checkout charged, carried on the line ([ADR-0006](adr/0006-oss-charged-percentage.md)) | Consumer |
+| `ExportOutsideEu` | Outside EU | Ship-to outside the EU VAT area (§3.1) | 0% | Any |
 
 **Deliberately excluded from v0.1:** VAT-exempt merchants under the 120,000 kr
 turnover threshold, multi-purpose vouchers and gift cards, construction reverse
@@ -167,6 +167,41 @@ scenario. Each is `Err` for now.
 > distance selling to EU consumers) below which Swedish VAT may be applied
 > instead. v0.1 assumes the merchant is already registered for OSS and states
 > this assumption in the integration guide.
+
+### 3.1 "EU" means the EU VAT area
+
+The scenarios depend on the EU VAT area, not on EU membership. Skatteverket
+counts a territory outside the VAT area as outside the EU even when it belongs
+to a member state, so goods sold to Åland are an export.
+
+| `ship_to` | VAT area |
+|---|---|
+| The 27 member states. Greece is `GR`, not `EL` | Inside |
+| `MC`, Monaco | Inside. A sale to Monaco is treated as a sale to France |
+| `XI`, Northern Ireland | Inside, for goods only |
+| `GB`, the rest of the United Kingdom, and `IM`, the Isle of Man | Outside |
+| `AX`, Åland, and any other excluded territory with its own code | Outside |
+
+`XI` is not an ISO code. The EU uses it for Northern Ireland, and a host must
+send it, because `GB` means export.
+
+Some excluded territories have no code of their own: the Canary Islands, Ceuta,
+Melilla, Mount Athos, Heligoland, Büsingen, Livigno and Campione d'Italia. A
+country code can't tell them from their member state. `ship_to` must name the
+VAT territory, and only the host knows it
+([04 §2.1](04-public-api.md#21-design-notes)).
+
+`vat.rs` holds the table as `in_eu_vat_area`, beside a table of the assigned
+ISO 3166-1 codes, `is_assigned_country_code`.
+
+> **VERIFY (Q13, Q14):** the VAT area was read against mervärdesskattelagen
+> (2023:200) 2 kap. 21–23 §§ and Skatteverket's
+> [export page](https://www.skatteverket.se/foretag/moms/saljavarorochtjanster/forsaljningtilllanderutanforeu/saljavarortilllanderutanforeu.4.361dc8c15312eff6fd3723b.html)
+> on 2026-11-17. Not yet confirmed: Articles 5–7 of Directive 2006/112/EC in
+> their current wording, the Isle of Man (21 § equates it with an EU country,
+> 23 § treats a sale to it as a sale to the United Kingdom), and the legal basis
+> and end date of Northern Ireland's status. The ISO list came from a packaged
+> copy, not from ISO.
 
 ## 4. Default account mapping
 

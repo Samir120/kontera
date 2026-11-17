@@ -125,6 +125,15 @@ Which is valid depends on the sale's scenario, which `vat.rs` decides
 - **`covers` is explicit.** The host has the provider's settlement report. The
   library does not guess which events a payout covers — guessing is precisely
   where these systems fail.
+- **`ship_to` names the VAT territory, not the postal country.** The scenario
+  depends on the EU VAT area, which is not the list of EU member states
+  ([02 §3.1](02-domain-model.md#31-eu-means-the-eu-vat-area)). Send `XI` for
+  Northern Ireland and `GB` for the rest of the United Kingdom. Send a
+  territory's own code where it has one, such as `AX` for Åland. A territory
+  outside the VAT area with no code of its own, such as the Canary Islands, must
+  not be sent under its member state's code, and v0.1 has no way to express a
+  sale to it. Two letters can't tell Kontera any of this, so the host answers
+  for it.
 - **VAT number is not validated here.** VIES lookup is network I/O. The host does
   it and passes the result. The library trusts the caller's assertion and
   records it.
@@ -143,14 +152,14 @@ Which is valid depends on the sale's scenario, which `vat.rs` decides
 
 ```jsonl
 {"type":"sale_captured","id":"ord_1001","at":"2026-01-05","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"SE","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":"standard","goods_or_services":"goods"}]}
-{"type":"sale_captured","id":"ord_1002","at":"2026-01-06","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"XX","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":{"destination":"20.00"},"goods_or_services":"goods"}]}
+{"type":"sale_captured","id":"ord_1002","at":"2026-01-06","provider":"stripe","buyer":{"kind":"consumer"},"ship_to":"DE","lines":[{"description":"Widget","amount_excl_vat":"1000.00","vat_rate":{"destination":"19.00"},"goods_or_services":"goods"}]}
 {"type":"fee_charged","id":"fee_2026_01_08","at":"2026-01-08","provider":"stripe","kind":"transaction","amount":"1168.00"}
 {"type":"payout_settled","id":"po_9001","at":"2026-01-08","provider":"stripe","amount":"47832.00","covers":["ord_1001","fee_2026_01_08"]}
 ```
 
-`XX` is a placeholder, like the org number in §3. This block is parsed by a test
-(`kontera-testkit/tests/docs_04_event_example.rs`), so it cannot drift from the
-types.
+The second sale ships to Germany and carries the rate its checkout charged. This
+block is parsed by a test (`kontera-testkit/tests/docs_04_event_example.rs`), so
+it cannot drift from the types.
 
 ## 3. Config schema v1 (TOML)
 
@@ -211,8 +220,11 @@ standard  = "25.00"
 reduced12 = "12.00"
 reduced6  = "6.00"
 
-[vat.rates.oss]                  # one line per country you sell to; XX is a placeholder
-XX = ["20.00", "10.00"]
+# One line per country you sell to, keyed like `ship_to`. An example, not data.
+# VERIFY: Germany's standard and reduced rates, noted 2026-11-17 and not read
+# from a primary source (UStG § 12). Keep your own table current.
+[vat.rates.oss]
+DE = ["19.00", "7.00"]
 ```
 
 This block is parsed by a test (`kontera-testkit/tests/docs_04_config_example.rs`),
@@ -236,6 +248,11 @@ accounts from its scenario.
 ([ADR-0006](adr/0006-oss-charged-percentage.md) §3). It validates and never
 supplies: the number posted is always the one on the line, so this table can
 refuse a posting but cannot change one. A country not listed has no valid rates.
+A key must be a country an OSS sale can ship to: in the EU VAT area
+([02 §3.1](02-domain-model.md#31-eu-means-the-eu-vat-area)) and not `SE`.
+Anything else, such as `NO`, `GB` or a mistyped `XX`, is
+`ConfigError::NotAnOssDestination`, because its rates could never be used.
+Northern Ireland is `XI`.
 A rate listed twice, `["20", "20.00"]` included, is
 `ConfigError::DuplicateOssRate`. Zero is not a valid rate: a destination zero
 rate is a `ScenarioGap`. The host maintains this table, and the library ships no
