@@ -1,4 +1,5 @@
-//! Tests for `VatPercent` and `line_vat`, over the public API only.
+//! Tests for `VatPercent`, `line_vat` and the territory tables, over the
+//! public API only.
 //!
 //! `VatPercent`'s grammar is restated here as an independent predicate, and
 //! the parser must agree with it on every string of up to five characters
@@ -9,8 +10,16 @@
 //! `line_vat` is checked against an `i128` reference with its own rounding.
 //! The rate table in these tests is deliberately not Sweden's, so a number
 //! hardcoded in the code would fail them.
+//!
+//! The territory tables are checked over all 676 country codes. The VAT area
+//! is compared with a list restated here. The ISO list is pinned by its size
+//! and by how many codes start and end with each letter, which catches a
+//! dropped, repeated or mistyped entry without a second copy of 249 codes.
 
-use kontera_core::{line_vat, Money, SaleLine, SeRates, SupplyKind, VatPercent, VatRate};
+use kontera_core::{
+    in_eu_vat_area, is_assigned_country_code, line_vat, CountryCode, Money, SaleLine, SeRates,
+    SupplyKind, VatPercent, VatRate,
+};
 use proptest::prelude::*;
 use rust_decimal::Decimal;
 
@@ -186,5 +195,99 @@ proptest! {
     #[test]
     fn a_zero_rated_line_carries_no_vat(net in 0..=i64::MAX) {
         prop_assert_eq!(vat(net, VatRate::Zero), 0);
+    }
+}
+
+// ── Territory tables ─────────────────────────────────────────────────────
+
+fn code(s: &str) -> CountryCode {
+    CountryCode::parse(s).unwrap()
+}
+
+/// Every value a `CountryCode` can hold: 26 × 26 = 676.
+fn every_code() -> Vec<CountryCode> {
+    let letters = || (b'A'..=b'Z').map(char::from);
+    letters()
+        .flat_map(|a| letters().map(move |b| code(&format!("{a}{b}"))))
+        .collect()
+}
+
+/// The EU's member states, restated here and not read from `vat.rs`.
+const MEMBER_STATES: [&str; 27] = [
+    "SE", "DK", "FI", "DE", "FR", "IT", "ES", "PT", "NL", "BE", "LU", "IE", "AT", "GR", "CY", "MT",
+    "PL", "CZ", "SK", "HU", "SI", "HR", "RO", "BG", "EE", "LV", "LT",
+];
+
+#[test]
+fn the_vat_area_is_the_member_states_plus_monaco_and_northern_ireland() {
+    let mut expected: Vec<CountryCode> = MEMBER_STATES.iter().map(|s| code(s)).collect();
+    expected.extend([code("MC"), code("XI")]);
+    for c in every_code() {
+        assert_eq!(in_eu_vat_area(c), expected.contains(&c), "{c}");
+    }
+    let inside = every_code().into_iter().filter(|c| in_eu_vat_area(*c));
+    assert_eq!(inside.count(), 29);
+}
+
+#[test]
+fn a_territory_outside_the_vat_area_is_outside_whoever_it_belongs_to() {
+    // Åland, five French overseas departments, the Faroes and Greenland, then
+    // the United Kingdom and its dependencies, then neighbours and the US.
+    for s in [
+        "AX", "GP", "MQ", "GF", "RE", "YT", "FO", "GL", "GB", "IM", "JE", "GG", "GI", "NO", "CH",
+        "IS", "LI", "AD", "SM", "VA", "US",
+    ] {
+        assert!(!in_eu_vat_area(code(s)), "{s}");
+        assert!(is_assigned_country_code(code(s)), "{s}");
+    }
+}
+
+/// How many assigned codes start with each letter, `A` to `Z`.
+const BY_FIRST_LETTER: [usize; 26] = [
+    16, 21, 19, 6, 7, 6, 19, 6, 10, 4, 11, 11, 23, 12, 1, 14, 1, 5, 21, 16, 6, 7, 2, 0, 2, 3,
+];
+/// How many assigned codes end with each letter, `A` to `Z`.
+const BY_SECOND_LETTER: [usize; 26] = [
+    12, 4, 8, 8, 15, 9, 13, 9, 10, 5, 9, 10, 17, 11, 12, 5, 5, 15, 12, 12, 9, 6, 10, 4, 9, 10,
+];
+
+#[test]
+fn there_are_249_assigned_codes_with_the_expected_letter_counts() {
+    let mut first = [0usize; 26];
+    let mut second = [0usize; 26];
+    let mut total = 0;
+    for c in every_code() {
+        if is_assigned_country_code(c) {
+            let text = c.to_string();
+            let [a, b] = text.as_bytes() else {
+                panic!("{text} is not two bytes")
+            };
+            first[usize::from(a - b'A')] += 1;
+            second[usize::from(b - b'A')] += 1;
+            total += 1;
+        }
+    }
+    assert_eq!(total, 249);
+    assert_eq!(first, BY_FIRST_LETTER);
+    assert_eq!(second, BY_SECOND_LETTER);
+}
+
+#[test]
+fn a_code_iso_never_assigned_or_has_withdrawn_is_not_assigned() {
+    // In use but never assigned, then placeholders, then withdrawn.
+    for s in [
+        "XI", "XK", "EL", "UK", "EU", "IC", "EA", "XX", "ZZ", "AA", "DD", "SU", "YU", "CS", "AN",
+        "ZR",
+    ] {
+        assert!(!is_assigned_country_code(code(s)), "{s}");
+    }
+}
+
+#[test]
+fn northern_ireland_is_the_only_vat_area_code_that_is_not_assigned() {
+    for c in every_code() {
+        if in_eu_vat_area(c) {
+            assert_eq!(is_assigned_country_code(c), c != code("XI"), "{c}");
+        }
     }
 }

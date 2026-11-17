@@ -36,7 +36,7 @@ pub use event::{
     EVENT_SCHEMA_VERSION,
 };
 pub use money::{Currency, Money, MoneyError};
-pub use vat::{line_vat, VatError, VatPercent};
+pub use vat::{in_eu_vat_area, is_assigned_country_code, line_vat, VatError, VatPercent};
 pub use verification::{BalancedTransaction, Line, Series, Verification, VerificationError};
 
 // Further re-exports land here as each module is filled in. `post()` is

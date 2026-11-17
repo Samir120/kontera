@@ -14,7 +14,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::SeRates;
-use crate::event::{SaleLine, VatRate};
+use crate::event::{CountryCode, SaleLine, VatRate};
 use crate::money::{Money, MoneyError};
 
 /// Why a value could not become one of the VAT types.
@@ -145,4 +145,96 @@ pub fn line_vat(line: &SaleLine, se: &SeRates<VatPercent>) -> Result<Money, Mone
     };
     let net = Decimal::from(line.amount_excl_vat());
     Money::rounded(net * percent.0 / Decimal::ONE_HUNDRED)
+}
+
+// ── Territory tables ─────────────────────────────────────────────────────
+//
+// Two sourced tables. Each is text, so it can be read against its source.
+// Each entry goes through the boundary parser, so a malformed entry matches
+// nothing, and `tests/vat.rs` counts the codes each table accepts.
+
+/// The EU VAT area as `ship_to` codes: the 27 member states, Monaco and
+/// Northern Ireland.
+///
+/// Source: mervärdesskattelagen (2023:200) 2 kap. 21–23 §§, which carry out
+/// Articles 5–7 of Directive 2006/112/EC.
+///
+/// - Greece is `GR`. `EL` is its VAT number prefix and not a country code.
+/// - `MC`: 21 § equates Monaco with an EU country, and 23 § treats a sale to
+///   Monaco as a sale to France.
+/// - `XI`: Northern Ireland, for goods only. ISO never assigned the code. The
+///   EU uses it for Northern Ireland, and `GB` stays outside the VAT area.
+/// - The Isle of Man (`IM`) is left out. 21 § equates it with an EU country,
+///   but 23 § treats a sale to it as a sale to the United Kingdom.
+/// - A territory that 22 § excludes and that has its own code, such as Åland
+///   (`AX`), is left out. One without its own code, such as the Canary
+///   Islands, can't be told from its member state by a country code. The host
+///   must not send the member state's code for it.
+// VERIFY (Q13): read against ML (2023:200) 2 kap. 21–23 §§ on riksdagen.se
+// (t.o.m. SFS 2026:1025) on 2026-11-17, and against Skatteverket's "Sälja
+// varor till länder utanför EU" (modified 2026-08-24) for Åland and Northern
+// Ireland. Still to confirm: the Directive's current Articles 5–7 on EUR-Lex,
+// the Isle of Man reading, the legal basis and end date of Northern Ireland's
+// status for goods, and Skatteverket's "Territoriella avgränsningar".
+const EU_VAT_AREA: [&str; 29] = [
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU", "IE", "IT",
+    "LT", "LU", "LV", "MC", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI",
+];
+
+/// The officially assigned ISO 3166-1 alpha-2 codes.
+///
+/// User-assigned and reserved codes are not here, even ones in common use:
+/// `XK` (Kosovo), `XI`, `UK`, `EU`, `EL`, `IC` (the Canary Islands) and `EA`
+/// (Ceuta and Melilla).
+// VERIFY (Q14): taken from pycountry 26.2.16, which packages Debian's
+// iso-codes, on 2026-11-17. Confirm against ISO's own list, the Online
+// Browsing Platform at iso.org/obp, and recheck it when ISO assigns or
+// withdraws a code.
+const ISO_3166_1_ASSIGNED: [&str; 249] = [
+    "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ",
+    "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS",
+    "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN",
+    "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE",
+    "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF",
+    "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM",
+    "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM",
+    "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC",
+    "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK",
+    "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA",
+    "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG",
+    "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW",
+    "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS",
+    "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO",
+    "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
+    "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
+];
+
+fn listed(table: &[&str], code: CountryCode) -> bool {
+    table
+        .iter()
+        .any(|entry| CountryCode::parse(entry).is_ok_and(|listed| listed == code))
+}
+
+/// Whether `code` is in the EU VAT area, where EU VAT rules apply to a sale of
+/// goods.
+///
+/// This is not EU membership. Åland (`AX`) belongs to a member state and is
+/// outside. Monaco (`MC`) and Northern Ireland (`XI`) belong to none and are
+/// inside. `GB` is outside, so a host sends `XI` for Northern Ireland.
+///
+/// A country code can't separate the Canary Islands from Spain. `ship_to` must
+/// name the VAT territory, and the host is the one who knows it (docs/04 §2.1).
+#[must_use]
+pub fn in_eu_vat_area(code: CountryCode) -> bool {
+    listed(&EU_VAT_AREA, code)
+}
+
+/// Whether `code` is an officially assigned ISO 3166-1 alpha-2 code.
+///
+/// [`CountryCode`] proves two capital letters and no more. This is the
+/// positive check that a code names a country: `DD` and `XX` have the shape
+/// and are not assigned. Neither are `XI` and `XK`, although both are in use.
+#[must_use]
+pub fn is_assigned_country_code(code: CountryCode) -> bool {
+    listed(&ISO_3166_1_ASSIGNED, code)
 }
