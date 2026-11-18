@@ -1,7 +1,9 @@
 //! VAT scenario determination. See docs/02 §3.
 //!
 //! Exactly four scenarios in v0.1. Anything else is `Err`, never a guess
-//! (ADR-0004). Scenario determination lands in T9.
+//! (ADR-0004). [`classify`] picks the scenario of a sale from its buyer and
+//! its `ship_to`. Whether each line of the sale fits that scenario is checked
+//! separately (ADR-0006 §1).
 //!
 //! [`VatPercent`] lives here rather than in `config.rs` because [`line_vat`],
 //! the `rate × net` multiply that consumes it, belongs here. `Money::rounded`
@@ -14,7 +16,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::SeRates;
-use crate::event::{CountryCode, SaleLine, VatRate};
+use crate::error::PostingError;
+use crate::event::{BuyerTaxStatus, CountryCode, SaleCaptured, SaleLine, VatRate};
 use crate::money::{Money, MoneyError};
 
 /// Why a value could not become one of the VAT types.
@@ -237,4 +240,69 @@ pub fn in_eu_vat_area(code: CountryCode) -> bool {
 #[must_use]
 pub fn is_assigned_country_code(code: CountryCode) -> bool {
     listed(&ISO_3166_1_ASSIGNED, code)
+}
+
+// ── Scenario ─────────────────────────────────────────────────────────────
+
+/// The VAT treatment of a sale: one of the four scenarios of docs/02 §3.
+///
+/// Never add a wildcard arm over this enum (docs/08 §6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VatScenario {
+    /// A sale within Sweden, at a Swedish rate, to any buyer.
+    SeDomestic,
+    /// Goods to a business elsewhere in the EU VAT area. No Swedish VAT is
+    /// charged, and the buyer accounts for the VAT.
+    EuB2bReverse,
+    /// Goods to a consumer elsewhere in the EU VAT area, at the destination's
+    /// rate, reported through OSS.
+    EuB2cOss,
+    /// A sale shipped outside the EU VAT area. No VAT, whoever the buyer is.
+    ExportOutsideEu,
+}
+
+/// The scenario of `sale`, from its `ship_to` and its buyer.
+///
+/// The questions are asked in this order, and the first yes decides:
+///
+/// 1. `SE` is [`VatScenario::SeDomestic`], whoever the buyer is. Sweden is in
+///    the VAT area, so this has to come first.
+/// 2. Anywhere else in the EU VAT area goes by the buyer: a business is
+///    [`VatScenario::EuB2bReverse`] and a consumer is [`VatScenario::EuB2cOss`].
+/// 3. An assigned ISO 3166-1 code outside the VAT area is
+///    [`VatScenario::ExportOutsideEu`].
+///
+/// A code that passes none of them is an error. Export means no VAT, so a
+/// code that names no country must never fall through to it.
+///
+/// The lines are not read. A line can still be wrong for the scenario
+/// returned here, and that check is separate (ADR-0006 §1). The host asserts
+/// the buyer's status and VAT number (docs/04 §2.1), and nothing here
+/// questions either.
+///
+/// # Errors
+///
+/// [`PostingError::UnknownShipTo`] if `ship_to` is neither in the EU VAT area
+/// nor an assigned ISO 3166-1 code. `XK`, `IC` and `EA` are such codes,
+/// although platforms send them, and so are `UK` and `EL`.
+// See docs/02 §3 and §3.1. VERIFY (Q13, Q14): the two tables above decide
+// every answer here, and neither is confirmed yet.
+pub fn classify(sale: &SaleCaptured) -> Result<VatScenario, PostingError> {
+    let ship_to = sale.ship_to;
+    if ship_to == CountryCode::SE {
+        return Ok(VatScenario::SeDomestic);
+    }
+    if in_eu_vat_area(ship_to) {
+        return Ok(match sale.buyer {
+            BuyerTaxStatus::Business { .. } => VatScenario::EuB2bReverse,
+            BuyerTaxStatus::Consumer => VatScenario::EuB2cOss,
+        });
+    }
+    if is_assigned_country_code(ship_to) {
+        return Ok(VatScenario::ExportOutsideEu);
+    }
+    Err(PostingError::UnknownShipTo {
+        event: sale.id.clone(),
+        ship_to,
+    })
 }

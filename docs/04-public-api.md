@@ -133,7 +133,9 @@ Which is valid depends on the sale's scenario, which `vat.rs` decides
   outside the VAT area with no code of its own, such as the Canary Islands, must
   not be sent under its member state's code, and v0.1 has no way to express a
   sale to it. Two letters can't tell Kontera any of this, so the host answers
-  for it.
+  for it. A code that is neither in the VAT area nor an assigned ISO 3166-1
+  code is refused with `UnknownShipTo` (§4) and never booked as an export.
+  `XK`, `IC`, `EA`, `UK` and `EL` are such codes.
 - **VAT number is not validated here.** VIES lookup is network I/O. The host does
   it and passes the result. The library trusts the caller's assertion and
   records it.
@@ -302,6 +304,11 @@ pub enum PostingError {
                                                // | NegativeLineAmount | NonPositiveFee
 
     // ── leaf: added with the code that first returns each ────────────────
+    #[error("event {event} ships to `{ship_to}`, which is neither in the EU VAT \
+             area nor an assigned ISO 3166-1 country code; send the code of the \
+             VAT territory the goods ship to")]
+    UnknownShipTo { event: EventId, ship_to: CountryCode },   // returned by vat::classify
+
     #[error("settlement {payout} does not reconcile: expected {expected}, \
              provider reported {actual}, difference {delta}")]
     SettlementMismatch {
@@ -330,7 +337,8 @@ pub enum PostingError {
 
 The nesting variants exist as of M1. Each leaf variant lands together with the
 code that first returns it and a test that produces it — a variant nothing
-constructs is untestable beyond its message. `Unbalanced` lives in
+constructs is untestable beyond its message. `UnknownShipTo` is the first leaf
+to exist, returned by `classify` in `vat.rs`. `Unbalanced` lives in
 `VerificationError`, not at the top level: the private constructor is where it
 is detected, so that is where it is defined.
 
@@ -358,6 +366,12 @@ or a destination rate not listed in `[vat.rates.oss]`, is an inconsistent event
 or a config mismatch. Those are separate `PostingError` leaves, because reporting
 them to the merchant as "handle manually" would hide platform bugs
 ([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
+
+`UnknownShipTo` is a leaf of that kind. A `ship_to` that is neither in the EU
+VAT area nor an assigned ISO 3166-1 code
+([02 §3.1](02-domain-model.md#31-eu-means-the-eu-vat-area)) is a host mistake
+or a territory v0.1 can't express. Booking it as an export would post a sale
+with no VAT on the strength of a typo, so `classify` refuses it.
 
 **`post()` never panics on any input.** Fuzz-tested. See
 [05](05-testing-strategy.md).

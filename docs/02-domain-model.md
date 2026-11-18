@@ -140,6 +140,11 @@ pipeline a pure fold with no update path.
 
 Exactly four. Anything else returns `Err(UnsupportedScenario)`.
 
+A scenario belongs to the sale, not to a line. `classify` in `vat.rs` picks it
+from the buyer and `ship_to` by the conditions below (§3.1 has the order).
+Whether each line fits the scenario is a separate check
+([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
+
 | ID | Scenario | Condition | VAT | Buyer status |
 |---|---|---|---|---|
 | `SeDomestic` | Sale within Sweden | Ship-to SE | 25% / 12% / 6% | Any |
@@ -181,6 +186,7 @@ to a member state, so goods sold to Åland are an export.
 | `XI`, Northern Ireland | Inside, for goods only |
 | `GB`, the rest of the United Kingdom, and `IM`, the Isle of Man | Outside |
 | `AX`, Åland, and any other excluded territory with its own code | Outside |
+| A code outside the VAT area that ISO never assigned: `XK`, `IC`, `EA`, `UK`, `EL` | Unknown. The sale is refused |
 
 `XI` is not an ISO code. The EU uses it for Northern Ireland, and a host must
 send it, because `GB` means export.
@@ -192,7 +198,21 @@ VAT territory, and only the host knows it
 ([04 §2.1](04-public-api.md#21-design-notes)).
 
 `vat.rs` holds the table as `in_eu_vat_area`, beside a table of the assigned
-ISO 3166-1 codes, `is_assigned_country_code`.
+ISO 3166-1 codes, `is_assigned_country_code`. `classify` asks three questions
+in this order, and the first yes decides:
+
+1. Is `ship_to` `SE`? The sale is `SeDomestic`, whoever the buyer is. Sweden is
+   in the VAT area, so this comes first.
+2. Is it elsewhere in the VAT area? A business buyer is `EuB2bReverse` and a
+   consumer is `EuB2cOss`.
+3. Is it an assigned ISO 3166-1 code? The sale is `ExportOutsideEu`.
+
+A code that passes none of them is refused with `UnknownShipTo`
+([04 §4](04-public-api.md#4-error-taxonomy)). Export means no VAT, so "not in
+the table" never means export. `XK` (Kosovo), `IC` (the Canary Islands) and
+`EA` (Ceuta and Melilla) are refused this way although platforms send them,
+because ISO never assigned them. v0.1 has no way to express a sale to any of
+the three.
 
 > **VERIFY (Q13, Q14):** the VAT area was read against mervärdesskattelagen
 > (2023:200) 2 kap. 21–23 §§ and Skatteverket's

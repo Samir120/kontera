@@ -1,5 +1,5 @@
-//! Tests for `VatPercent`, `line_vat` and the territory tables, over the
-//! public API only.
+//! Tests for `VatPercent`, `line_vat`, the territory tables and `classify`,
+//! over the public API only.
 //!
 //! `VatPercent`'s grammar is restated here as an independent predicate, and
 //! the parser must agree with it on every string of up to five characters
@@ -15,10 +15,16 @@
 //! is compared with a list restated here. The ISO list is pinned by its size
 //! and by how many codes start and end with each letter, which catches a
 //! dropped, repeated or mistyped entry without a second copy of 249 codes.
+//!
+//! `classify` is checked on every code with both kinds of buyer, 1 352 sales,
+//! against the docs/02 §3 conditions restated here. How many codes land in
+//! each scenario is pinned too, so the restatement can't drift with the code.
 
+use chrono::NaiveDate;
 use kontera_core::{
-    in_eu_vat_area, is_assigned_country_code, line_vat, CountryCode, Money, SaleLine, SeRates,
-    SupplyKind, VatPercent, VatRate,
+    classify, in_eu_vat_area, is_assigned_country_code, line_vat, BuyerTaxStatus, CountryCode,
+    EventId, Money, PostingError, ProviderId, SaleCaptured, SaleLine, SeRates, SupplyKind,
+    VatNumber, VatPercent, VatRate, VatScenario,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -289,5 +295,150 @@ fn northern_ireland_is_the_only_vat_area_code_that_is_not_assigned() {
         if in_eu_vat_area(c) {
             assert_eq!(is_assigned_country_code(c), c != code("XI"), "{c}");
         }
+    }
+}
+
+// ── Scenario ─────────────────────────────────────────────────────────────
+
+fn business() -> BuyerTaxStatus {
+    BuyerTaxStatus::Business {
+        vat_number: VatNumber::parse("DE123456789").unwrap(),
+    }
+}
+
+/// A sale with no lines. `classify` reads the buyer and `ship_to` only.
+fn sale(buyer: BuyerTaxStatus, ship_to: &str) -> SaleCaptured {
+    SaleCaptured {
+        id: EventId::parse("ord_1").unwrap(),
+        at: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+        provider: ProviderId::parse("stripe").unwrap(),
+        buyer,
+        ship_to: code(ship_to),
+        lines: Vec::new(),
+    }
+}
+
+/// The error for a `ship_to` no scenario accepts, as `sale` would raise it.
+fn unknown(ship_to: &str) -> PostingError {
+    PostingError::UnknownShipTo {
+        event: EventId::parse("ord_1").unwrap(),
+        ship_to: code(ship_to),
+    }
+}
+
+/// The docs/02 §3 conditions, restated. The VAT area is the list restated
+/// above and not `in_eu_vat_area`. Whether a code is assigned does come from
+/// `is_assigned_country_code`, which the letter counts above pin.
+fn reference_scenario(buyer: &BuyerTaxStatus, ship_to: &str) -> Option<VatScenario> {
+    if ship_to == "SE" {
+        return Some(VatScenario::SeDomestic);
+    }
+    if MEMBER_STATES.contains(&ship_to) || ship_to == "MC" || ship_to == "XI" {
+        return Some(match buyer {
+            BuyerTaxStatus::Business { .. } => VatScenario::EuB2bReverse,
+            BuyerTaxStatus::Consumer => VatScenario::EuB2cOss,
+        });
+    }
+    is_assigned_country_code(code(ship_to)).then_some(VatScenario::ExportOutsideEu)
+}
+
+#[test]
+fn classify_agrees_with_the_restated_conditions_on_every_code_and_buyer() {
+    for c in every_code() {
+        let s = c.to_string();
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            let expected = reference_scenario(&buyer, &s).ok_or_else(|| unknown(&s));
+            assert_eq!(classify(&sale(buyer, &s)), expected, "{s}");
+        }
+    }
+}
+
+/// How many of the 676 codes give each outcome, in the order domestic,
+/// reverse charge, OSS, export, error.
+fn tally(buyer: &BuyerTaxStatus) -> [usize; 5] {
+    let mut counts = [0; 5];
+    for c in every_code() {
+        // Which error it is, is the test above's question.
+        let slot = match classify(&sale(buyer.clone(), &c.to_string())).ok() {
+            Some(VatScenario::SeDomestic) => 0,
+            Some(VatScenario::EuB2bReverse) => 1,
+            Some(VatScenario::EuB2cOss) => 2,
+            Some(VatScenario::ExportOutsideEu) => 3,
+            None => 4,
+        };
+        counts[slot] += 1;
+    }
+    counts
+}
+
+#[test]
+fn each_outcome_covers_the_expected_number_of_codes() {
+    // 29 codes in the VAT area, one of them Sweden. 249 assigned codes, of
+    // which 28 are in the VAT area (`XI` is not assigned), so 221 exports.
+    // 676 − 29 − 221 = 426 codes that name no country.
+    assert_eq!(tally(&BuyerTaxStatus::Consumer), [1, 0, 28, 221, 426]);
+    assert_eq!(tally(&business()), [1, 28, 0, 221, 426]);
+}
+
+#[test]
+fn sweden_is_domestic_whoever_the_buyer_is() {
+    // The business here has a German VAT number and is still domestic.
+    for buyer in [BuyerTaxStatus::Consumer, business()] {
+        assert_eq!(classify(&sale(buyer, "SE")), Ok(VatScenario::SeDomestic));
+    }
+}
+
+#[test]
+fn monaco_and_northern_ireland_go_by_the_buyer_like_a_member_state() {
+    for s in ["DE", "GR", "MC", "XI"] {
+        let to = |buyer| classify(&sale(buyer, s));
+        assert_eq!(to(business()), Ok(VatScenario::EuB2bReverse), "{s}");
+        assert_eq!(
+            to(BuyerTaxStatus::Consumer),
+            Ok(VatScenario::EuB2cOss),
+            "{s}"
+        );
+    }
+}
+
+#[test]
+fn an_assigned_code_outside_the_vat_area_is_an_export_for_either_buyer() {
+    // Åland belongs to a member state and is still an export.
+    // VERIFY (Q13a): `IM` is an export only on the reading that ML 2 kap.
+    // 23 § treats a sale to the Isle of Man as a sale to the United Kingdom.
+    for s in ["AX", "IM", "GB", "NO", "CH", "US"] {
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            assert_eq!(
+                classify(&sale(buyer, s)),
+                Ok(VatScenario::ExportOutsideEu),
+                "{s}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_code_that_names_no_country_is_an_error_and_never_an_export() {
+    // Sent by platforms but never assigned (Kosovo, the Canary Islands, Ceuta
+    // and Melilla), then common mistakes for `GB` and `GR`, then placeholders
+    // and a withdrawn code.
+    for s in ["XK", "IC", "EA", "UK", "EL", "EU", "XX", "ZZ", "DD"] {
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            assert_eq!(classify(&sale(buyer, s)), Err(unknown(s)), "{s}");
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn the_scenario_depends_on_the_kind_of_buyer_and_not_on_the_vat_number(
+        number in ".+",
+        index in 0..676usize,
+    ) {
+        let s = every_code()[index].to_string();
+        let buyer = BuyerTaxStatus::Business {
+            vat_number: VatNumber::parse(&number).unwrap(),
+        };
+        prop_assert_eq!(classify(&sale(buyer, &s)), classify(&sale(business(), &s)));
     }
 }

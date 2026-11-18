@@ -529,7 +529,8 @@ pub struct SaleCaptured {
     pub provider: ProviderId,
     /// Consumer or business.
     pub buyer: BuyerTaxStatus,
-    /// Destination country, ISO 3166-1 alpha-2. Decides the VAT scenario.
+    /// The VAT territory the goods ship to, as a country code (docs/04
+    /// §2.1). Decides the VAT scenario.
     pub ship_to: CountryCode,
     /// What was sold, net of VAT.
     pub lines: Vec<SaleLine>,

@@ -139,7 +139,8 @@ beside it without touching the core.
 
 1. **validate** — duplicate IDs, dangling references, dates inside the fiscal
    year, closed periods
-2. **vat** — determine one of four scenarios per sale line; unknown → `Err`
+2. **vat** — determine one of four scenarios per sale, from its buyer and
+   `ship_to`, then check each line against it; anything else → `Err`
 3. **rules** — map each event to a `BalancedTransaction` using `Config`
 4. **settle** — group by payout, assert I2, emit the payout verification
 5. **assemble** — sort deterministically, assign verification numbers, build
