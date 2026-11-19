@@ -37,7 +37,8 @@ pub use event::{
 };
 pub use money::{Currency, Money, MoneyError};
 pub use vat::{
-    classify, in_eu_vat_area, is_assigned_country_code, line_vat, VatError, VatPercent, VatScenario,
+    check_sale, classify, in_eu_vat_area, is_assigned_country_code, line_vat, ScenarioGap,
+    VatError, VatPercent, VatScenario,
 };
 pub use verification::{BalancedTransaction, Line, Series, Verification, VerificationError};
 

@@ -2,8 +2,8 @@
 //!
 //! Exactly four scenarios in v0.1. Anything else is `Err`, never a guess
 //! (ADR-0004). [`classify`] picks the scenario of a sale from its buyer and
-//! its `ship_to`. Whether each line of the sale fits that scenario is checked
-//! separately (ADR-0006 §1).
+//! its `ship_to`. [`check_sale`] then checks every line against that scenario
+//! (ADR-0006 §1), and is the function a posting rule calls.
 //!
 //! [`VatPercent`] lives here rather than in `config.rs` because [`line_vat`],
 //! the `rate × net` multiply that consumes it, belongs here. `Money::rounded`
@@ -15,9 +15,9 @@ use std::str::FromStr;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::config::SeRates;
+use crate::config::{SeRates, VatRates};
 use crate::error::PostingError;
-use crate::event::{BuyerTaxStatus, CountryCode, SaleCaptured, SaleLine, VatRate};
+use crate::event::{BuyerTaxStatus, CountryCode, SaleCaptured, SaleLine, SupplyKind, VatRate};
 use crate::money::{Money, MoneyError};
 
 /// Why a value could not become one of the VAT types.
@@ -246,6 +246,8 @@ pub fn is_assigned_country_code(code: CountryCode) -> bool {
 
 /// The VAT treatment of a sale: one of the four scenarios of docs/02 §3.
 ///
+/// Displays as its docs/02 §3 identifier, such as `EuB2cOss`.
+///
 /// Never add a wildcard arm over this enum (docs/08 §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VatScenario {
@@ -259,6 +261,17 @@ pub enum VatScenario {
     EuB2cOss,
     /// A sale shipped outside the EU VAT area. No VAT, whoever the buyer is.
     ExportOutsideEu,
+}
+
+impl fmt::Display for VatScenario {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            VatScenario::SeDomestic => "SeDomestic",
+            VatScenario::EuB2bReverse => "EuB2bReverse",
+            VatScenario::EuB2cOss => "EuB2cOss",
+            VatScenario::ExportOutsideEu => "ExportOutsideEu",
+        })
+    }
 }
 
 /// The scenario of `sale`, from its `ship_to` and its buyer.
@@ -275,10 +288,10 @@ pub enum VatScenario {
 /// A code that passes none of them is an error. Export means no VAT, so a
 /// code that names no country must never fall through to it.
 ///
-/// The lines are not read. A line can still be wrong for the scenario
-/// returned here, and that check is separate (ADR-0006 §1). The host asserts
-/// the buyer's status and VAT number (docs/04 §2.1), and nothing here
-/// questions either.
+/// The lines are not read, so a line can still be wrong for the scenario
+/// returned here. A posting rule calls [`check_sale`], which checks them too.
+/// The host asserts the buyer's status and VAT number (docs/04 §2.1), and
+/// nothing here questions either.
 ///
 /// # Errors
 ///
@@ -305,4 +318,146 @@ pub fn classify(sale: &SaleCaptured) -> Result<VatScenario, PostingError> {
         event: sale.id.clone(),
         ship_to,
     })
+}
+
+// ── Line check ───────────────────────────────────────────────────────────
+
+/// A VAT treatment that v0.1 recognises and refuses (ADR-0004). It is the
+/// `reason` in [`PostingError::UnsupportedScenario`].
+///
+/// A gap means the event is right and the library has no posting for it, so
+/// the merchant books the order by hand. A line that contradicts its
+/// scenario, or a rate missing from `[vat.rates.oss]`, is not a gap. Those
+/// are platform or config mistakes, and they have their own errors
+/// (ADR-0006 §1).
+///
+/// This is plain data and not an error type. It has no event id of its own,
+/// so [`PostingError::UnsupportedScenario`] carries it as a field. docs/04 §4
+/// lists the treatments v0.1 can't detect yet. Each becomes a variant
+/// together with the event field that reveals it.
+///
+/// Never add a wildcard arm over this enum (docs/08 §6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenarioGap {
+    /// A `Services` line on a sale that ships outside Sweden, in any
+    /// scenario. The four scenarios are written for goods.
+    CrossBorderServices,
+    /// A `zero` line on an OSS sale. A destination zero rate is not an OSS
+    /// sale at 0 % (ADR-0006 §2).
+    DestinationZeroRate,
+    /// A `zero` line on a domestic sale. v0.1 has no posting for a Swedish
+    /// sale without VAT.
+    DomesticZeroRate,
+}
+
+impl fmt::Display for ScenarioGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ScenarioGap::CrossBorderServices => "a service sold outside Sweden",
+            ScenarioGap::DestinationZeroRate => "a zero-rated line on an OSS sale",
+            ScenarioGap::DomesticZeroRate => "a line without VAT on a domestic sale",
+        })
+    }
+}
+
+/// The scenario of `sale`, once every line has been checked against it.
+///
+/// [`classify`] picks the scenario. Each line must then pass two checks, in
+/// this order:
+///
+/// 1. A `Services` line on a sale that ships outside Sweden is
+///    [`ScenarioGap::CrossBorderServices`], in every scenario. This comes
+///    first because such a line can rightly carry a Swedish class, and the
+///    table below would report that as the platform's mistake.
+/// 2. The line's `vat_rate` must fit the scenario (ADR-0006 §1):
+///
+/// | Scenario | Swedish class | `zero` | `destination` |
+/// |---|---|---|---|
+/// | `SeDomestic` | allowed | gap | mismatch |
+/// | `EuB2cOss` | mismatch | gap | allowed if listed for `ship_to` |
+/// | `EuB2bReverse`, `ExportOutsideEu` | mismatch | allowed | mismatch |
+///
+/// Lines are checked in order and the first failure is returned, so a sale
+/// always gives the same error. A sale with no lines passes here, and the
+/// posting rule refuses it.
+///
+/// `rates.oss` validates and never supplies. A listed rate lets the line
+/// through, and the number posted is still the one on the line.
+///
+/// # Errors
+///
+/// - [`PostingError::UnknownShipTo`] from [`classify`], before any line is
+///   read.
+/// - [`PostingError::UnsupportedScenario`] for a treatment v0.1 refuses.
+/// - [`PostingError::VatRateMismatch`] for a rate the scenario can't carry.
+/// - [`PostingError::UnlistedOssRate`] for a destination percentage that
+///   `[vat.rates.oss]` doesn't list for `ship_to`.
+pub fn check_sale(sale: &SaleCaptured, rates: &VatRates) -> Result<VatScenario, PostingError> {
+    let scenario = classify(sale)?;
+    for (index, line) in sale.lines.iter().enumerate() {
+        check_line(sale, scenario, index, line, rates)?;
+    }
+    Ok(scenario)
+}
+
+/// One line of `sale` against `scenario`, which must be the sale's own.
+fn check_line(
+    sale: &SaleCaptured,
+    scenario: VatScenario,
+    index: usize,
+    line: &SaleLine,
+    rates: &VatRates,
+) -> Result<(), PostingError> {
+    let gap = |reason| PostingError::UnsupportedScenario {
+        event: sale.id.clone(),
+        reason,
+    };
+    let mismatch = || PostingError::VatRateMismatch {
+        event: sale.id.clone(),
+        line: index,
+        scenario,
+        vat_rate: line.vat_rate,
+    };
+    match line.goods_or_services {
+        SupplyKind::Goods => {}
+        SupplyKind::Services => {
+            if sale.ship_to != CountryCode::SE {
+                return Err(gap(ScenarioGap::CrossBorderServices));
+            }
+        }
+    }
+    match scenario {
+        VatScenario::SeDomestic => match line.vat_rate {
+            VatRate::Standard | VatRate::Reduced12 | VatRate::Reduced6 => Ok(()),
+            VatRate::Zero => Err(gap(ScenarioGap::DomesticZeroRate)),
+            VatRate::Destination(_) => Err(mismatch()),
+        },
+        VatScenario::EuB2cOss => match line.vat_rate {
+            VatRate::Standard | VatRate::Reduced12 | VatRate::Reduced6 => Err(mismatch()),
+            VatRate::Zero => Err(gap(ScenarioGap::DestinationZeroRate)),
+            VatRate::Destination(percent) => {
+                let listed = rates
+                    .oss
+                    .get(&sale.ship_to)
+                    .is_some_and(|valid| valid.contains(&percent));
+                if listed {
+                    Ok(())
+                } else {
+                    Err(PostingError::UnlistedOssRate {
+                        event: sale.id.clone(),
+                        line: index,
+                        country: sale.ship_to,
+                        percent,
+                    })
+                }
+            }
+        },
+        VatScenario::EuB2bReverse | VatScenario::ExportOutsideEu => match line.vat_rate {
+            VatRate::Standard
+            | VatRate::Reduced12
+            | VatRate::Reduced6
+            | VatRate::Destination(_) => Err(mismatch()),
+            VatRate::Zero => Ok(()),
+        },
+    }
 }

@@ -33,8 +33,9 @@ test over generated line sets. Money rounding matches hand-worked examples.
 - Resolve **Q1** (per-provider receivable accounts) and **Q2** (returns strategy)
 
 **Exit:** the worked example from [01 §1.1](01-problem-and-scope.md) produces the
-exact posting table, as a unit test. Every excluded scenario returns a typed
-`ScenarioGap`, never a guess.
+exact posting table, as a unit test. Every excluded scenario that an event can
+express returns a typed `ScenarioGap`, never a guess. The rest have no event
+field to detect them by yet ([04 §4](04-public-api.md#4-error-taxonomy)).
 
 ## M3 · Weeks 5–6 — SIE 4I and the acceptance test
 

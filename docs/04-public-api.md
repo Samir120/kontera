@@ -136,6 +136,12 @@ Which is valid depends on the sale's scenario, which `vat.rs` decides
   for it. A code that is neither in the VAT area nor an assigned ISO 3166-1
   code is refused with `UnknownShipTo` (§4) and never booked as an export.
   `XK`, `IC`, `EA`, `UK` and `EL` are such codes.
+- **A service sold outside Sweden is refused.** The four scenarios are written
+  for goods, and where a service is taxed follows other rules that v0.1 does
+  not model. A `services` line on a sale with `ship_to` other than `SE` is
+  `UnsupportedScenario` with `CrossBorderServices` (§4), whoever the buyer is
+  and whatever rate the line carries. A service sold within Sweden posts like
+  goods.
 - **VAT number is not validated here.** VIES lookup is network I/O. The host does
   it and passes the result. The library trusts the caller's assertion and
   records it.
@@ -303,20 +309,33 @@ pub enum PostingError {
     Event(#[from] EventError),                 // Invalid{EventId,ProviderId,CountryCode,VatNumber}
                                                // | NegativeLineAmount | NonPositiveFee
 
-    // ── leaf: added with the code that first returns each ────────────────
+    // ── leaf: these four exist ───────────────────────────────────────────
     #[error("event {event} ships to `{ship_to}`, which is neither in the EU VAT \
              area nor an assigned ISO 3166-1 country code; send the code of the \
              VAT territory the goods ship to")]
     UnknownShipTo { event: EventId, ship_to: CountryCode },   // returned by vat::classify
 
+    // The next three are returned by vat::check_sale.
+    #[error("unsupported VAT scenario for event {event}: {reason}; v0.1 cannot \
+             post it, so book this order by hand")]
+    UnsupportedScenario { event: EventId, reason: ScenarioGap },
+
+    #[error("event {event}, lines[{line}]: vat_rate `{vat_rate}` does not fit a \
+             {scenario} sale; SeDomestic takes a Swedish class, EuB2cOss a \
+             destination percentage, EuB2bReverse and ExportOutsideEu `zero`")]
+    VatRateMismatch { event: EventId, line: usize, scenario: VatScenario, vat_rate: VatRate },
+
+    #[error("event {event}, lines[{line}]: {percent} % is not listed for \
+             `{country}` in [vat.rates.oss]; correct the line, or add the rate \
+             if the checkout charged it")]
+    UnlistedOssRate { event: EventId, line: usize, country: CountryCode, percent: VatPercent },
+
+    // ── leaf: still to come, each with the code that first returns it ────
     #[error("settlement {payout} does not reconcile: expected {expected}, \
              provider reported {actual}, difference {delta}")]
     SettlementMismatch {
         payout: EventId, expected: Money, actual: Money, delta: Money,
     },
-
-    #[error("unsupported VAT scenario for event {event}: {reason}")]
-    UnsupportedScenario { event: EventId, reason: ScenarioGap },
 
     #[error("event {event} references unknown event {missing}")]
     UnknownReference { event: EventId, missing: EventId },
@@ -333,14 +352,22 @@ pub enum PostingError {
     #[error("event {event} dated {at} is outside fiscal year {start}–{end}")]
     OutsidePeriod { event: EventId, at: NaiveDate, start: NaiveDate, end: NaiveDate },
 }
+
+// The `reason` of `UnsupportedScenario`. It has a `Display` and is not an error.
+pub enum ScenarioGap {
+    CrossBorderServices,   // "a service sold outside Sweden"
+    DestinationZeroRate,   // "a zero-rated line on an OSS sale"
+    DomesticZeroRate,      // "a line without VAT on a domestic sale"
+}
 ```
 
 The nesting variants exist as of M1. Each leaf variant lands together with the
 code that first returns it and a test that produces it — a variant nothing
-constructs is untestable beyond its message. `UnknownShipTo` is the first leaf
-to exist, returned by `classify` in `vat.rs`. `Unbalanced` lives in
-`VerificationError`, not at the top level: the private constructor is where it
-is detected, so that is where it is defined.
+constructs is untestable beyond its message. Four leaves exist. `classify` in
+`vat.rs` returns `UnknownShipTo`, and `check_sale` beside it returns
+`UnsupportedScenario`, `VatRateMismatch` and `UnlistedOssRate`. `Unbalanced`
+lives in `VerificationError`, not at the top level: the private constructor is
+where it is detected, so that is where it is defined.
 
 Two error enums sit outside `PostingError`: `ConfigError` (schema version,
 fiscal year, months, org number, account roles, OSS rates — §3) and `VatError`
@@ -355,20 +382,46 @@ ever raises a variant of either, that enum nests then.
 `SettlementMismatch` carries `delta` deliberately — that number is the first
 thing a human needs, and it is usually a fee the host forgot to emit.
 
-`ScenarioGap` is an enum, not a string: `VatExemptMerchant`, `GiftCard`,
-`ConstructionReverseCharge`, `PrepaymentVatPoint`, `NonEuNonSeSpecialScheme`,
-`MultiCurrency`, plus destination zero-rating (T9 names that variant). This turns
-the v0.1 non-goals into machine-readable output — the host can tell the merchant
-exactly which orders need manual handling instead of failing opaquely.
+`ScenarioGap` is an enum, not a string. It turns the v0.1 non-goals into
+machine-readable output, so the host can tell the merchant exactly which orders
+need manual handling instead of failing opaquely. It is plain data and not an
+error type: a gap needs the event id beside it, so `UnsupportedScenario`
+carries it as a field. Three gaps exist, all returned by `check_sale`:
 
-Only an unsupported treatment is a gap. A line inconsistent with its scenario,
-or a destination rate not listed in `[vat.rates.oss]`, is an inconsistent event
-or a config mismatch. Those are separate `PostingError` leaves, because reporting
-them to the merchant as "handle manually" would hide platform bugs
-([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
+| `ScenarioGap` | Returned for |
+|---|---|
+| `CrossBorderServices` | A `services` line on a sale with `ship_to` other than `SE`, in any scenario |
+| `DestinationZeroRate` | A `zero` line on an `EuB2cOss` sale ([ADR-0006](adr/0006-oss-charged-percentage.md) §2) |
+| `DomesticZeroRate` | A `zero` line on an `SeDomestic` sale |
 
-`UnknownShipTo` is a leaf of that kind. A `ship_to` that is neither in the EU
-VAT area nor an assigned ISO 3166-1 code
+The other exclusions of [02 §3](02-domain-model.md#3-vat-scenarios-v01) have no
+variant yet: a VAT-exempt merchant, a gift card or voucher, construction
+reverse charge, a margin scheme, a prepayment whose VAT point differs from
+delivery, and a non-EU special scheme. The same goes for a second currency,
+which is a non-goal of [01 §4](01-problem-and-scope.md#4-non-goals-v01). No
+event field reveals any of them, so nothing could return such a variant or test
+it. Each arrives as a variant together with the schema field that makes it
+detectable. Until then the library can't refuse such an order, and the host
+must not send one as an ordinary sale.
+
+Only an unsupported treatment is a gap. A line whose `vat_rate` its scenario
+can't carry is `VatRateMismatch`, and a destination percentage that
+`[vat.rates.oss]` doesn't list for the sale's `ship_to` is `UnlistedOssRate`.
+The first is an inconsistent event and the second a config or data mismatch.
+They are separate leaves because reporting them to the merchant as "handle
+manually" would hide platform bugs
+([ADR-0006](adr/0006-oss-charged-percentage.md) §1 has the table). Both carry
+`line`, the index into the sale's `lines` counted from zero, and print it as
+`lines[1]`. A gap names only the event, because the merchant handles the whole
+order.
+
+`check_sale` returns one failure for a sale, and always the same one. An
+unknown `ship_to` is reported before any line. The lines are then checked in
+order, and within a line the services check comes before the rate table. A
+sale with no lines passes this check and is refused later (§2.1).
+
+`UnknownShipTo` is a leaf of the same kind as the mismatch. A `ship_to` that is
+neither in the EU VAT area nor an assigned ISO 3166-1 code
 ([02 §3.1](02-domain-model.md#31-eu-means-the-eu-vat-area)) is a host mistake
 or a territory v0.1 can't express. Booking it as an export would post a sale
 with no VAT on the strength of a typo, so `classify` refuses it.

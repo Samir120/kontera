@@ -12,15 +12,18 @@
 //!
 //! The leaf variants carry a failure that only the fold can detect. Each is
 //! added with the code that first returns it, so every variant lands together
-//! with a test that actually produces it. [`PostingError::UnknownShipTo`] is
-//! the first, returned by `vat::classify`. Still to come from docs/04 §4:
-//! `SettlementMismatch`, `UnsupportedScenario`, `UnknownReference`,
-//! `DuplicateEventId`, `MissingAccountMapping`, `PeriodClosed` and
-//! `OutsidePeriod`. `ScenarioGap` and `MappingKey` do not exist yet.
+//! with a test that actually produces it. `vat::classify` returns
+//! [`PostingError::UnknownShipTo`]. `vat::check_sale` returns
+//! [`PostingError::UnsupportedScenario`], [`PostingError::VatRateMismatch`]
+//! and [`PostingError::UnlistedOssRate`]. Still to come from docs/04 §4:
+//! `SettlementMismatch`, `UnknownReference`, `DuplicateEventId`,
+//! `MissingAccountMapping`, `PeriodClosed` and `OutsidePeriod`. `MappingKey`
+//! does not exist yet.
 
 use crate::account::AccountError;
-use crate::event::{CountryCode, EventError, EventId};
+use crate::event::{CountryCode, EventError, EventId, VatRate};
 use crate::money::MoneyError;
+use crate::vat::{ScenarioGap, VatPercent, VatScenario};
 use crate::verification::VerificationError;
 
 /// Why an event log could not be folded into a ledger.
@@ -52,6 +55,44 @@ pub enum PostingError {
         event: EventId,
         /// The code as the host sent it.
         ship_to: CountryCode,
+    },
+    /// A sale needs a VAT treatment that v0.1 recognises and refuses
+    /// (ADR-0004). The event is right, and the merchant books the order by
+    /// hand.
+    #[error("unsupported VAT scenario for event {event}: {reason}; v0.1 cannot post it, so book this order by hand")]
+    UnsupportedScenario {
+        /// The sale.
+        event: EventId,
+        /// Which treatment is missing.
+        reason: ScenarioGap,
+    },
+    /// A line carries a `vat_rate` that the scenario of its sale can't take
+    /// (ADR-0006 §1). The host sent the buyer, the `ship_to` or the rate
+    /// wrong, so this is not reported as a gap.
+    #[error("event {event}, lines[{line}]: vat_rate `{vat_rate}` does not fit a {scenario} sale; SeDomestic takes a Swedish class, EuB2cOss a destination percentage, EuB2bReverse and ExportOutsideEu `zero`")]
+    VatRateMismatch {
+        /// The sale.
+        event: EventId,
+        /// The line's index in the sale's `lines`, counted from zero.
+        line: usize,
+        /// The scenario the sale's buyer and `ship_to` give.
+        scenario: VatScenario,
+        /// The rate as the host sent it.
+        vat_rate: VatRate,
+    },
+    /// An OSS line carries a percentage that `[vat.rates.oss]` does not list
+    /// for the sale's `ship_to` (ADR-0006 §3). A country with no entry has no
+    /// valid rates.
+    #[error("event {event}, lines[{line}]: {percent} % is not listed for `{country}` in [vat.rates.oss]; correct the line, or add the rate if the checkout charged it")]
+    UnlistedOssRate {
+        /// The sale.
+        event: EventId,
+        /// The line's index in the sale's `lines`, counted from zero.
+        line: usize,
+        /// The sale's `ship_to`, which is the key looked up.
+        country: CountryCode,
+        /// The percentage on the line.
+        percent: VatPercent,
     },
 }
 
@@ -115,16 +156,36 @@ mod tests {
         // walking the chain prints the same message twice. This pins it. A
         // leaf has nothing inside it, so its message is pinned in full.
         //
-        // The match is exhaustive on purpose: a new variant must be added
-        // here deliberately, with its own expectation.
+        // Both matches are exhaustive on purpose: a new variant, or a new
+        // gap, must be added here deliberately, with its own expectation.
+        let event = || EventId::parse("ord_1").unwrap();
+        let gap = |reason| PostingError::UnsupportedScenario {
+            event: event(),
+            reason,
+        };
         let cases = [
             PostingError::from(Money::parse("x").unwrap_err()),
             PostingError::from(AccountNumber::parse("x").unwrap_err()),
             PostingError::from(Series::parse("x").unwrap_err()),
             PostingError::from(CountryCode::parse("x").unwrap_err()),
             PostingError::UnknownShipTo {
-                event: EventId::parse("ord_1").unwrap(),
+                event: event(),
                 ship_to: CountryCode::parse("XK").unwrap(),
+            },
+            gap(ScenarioGap::CrossBorderServices),
+            gap(ScenarioGap::DestinationZeroRate),
+            gap(ScenarioGap::DomesticZeroRate),
+            PostingError::VatRateMismatch {
+                event: event(),
+                line: 1,
+                scenario: VatScenario::EuB2cOss,
+                vat_rate: VatRate::Standard,
+            },
+            PostingError::UnlistedOssRate {
+                event: event(),
+                line: 0,
+                country: CountryCode::parse("DE").unwrap(),
+                percent: VatPercent::parse("19").unwrap(),
             },
         ];
         for err in cases {
@@ -136,6 +197,26 @@ mod tests {
                 PostingError::UnknownShipTo { .. } => "event ord_1 ships to `XK`, which is \
                      neither in the EU VAT area nor an assigned ISO 3166-1 country code; \
                      send the code of the VAT territory the goods ship to"
+                    .to_owned(),
+                PostingError::UnsupportedScenario { reason, .. } => {
+                    let treatment = match reason {
+                        ScenarioGap::CrossBorderServices => "a service sold outside Sweden",
+                        ScenarioGap::DestinationZeroRate => "a zero-rated line on an OSS sale",
+                        ScenarioGap::DomesticZeroRate => "a line without VAT on a domestic sale",
+                    };
+                    format!(
+                        "unsupported VAT scenario for event ord_1: {treatment}; v0.1 cannot \
+                         post it, so book this order by hand"
+                    )
+                }
+                PostingError::VatRateMismatch { .. } => "event ord_1, lines[1]: vat_rate \
+                     `standard` does not fit a EuB2cOss sale; SeDomestic takes a Swedish \
+                     class, EuB2cOss a destination percentage, EuB2bReverse and \
+                     ExportOutsideEu `zero`"
+                    .to_owned(),
+                PostingError::UnlistedOssRate { .. } => "event ord_1, lines[0]: 19.00 % is \
+                     not listed for `DE` in [vat.rates.oss]; correct the line, or add the \
+                     rate if the checkout charged it"
                     .to_owned(),
             };
             assert_eq!(err.to_string(), expected);

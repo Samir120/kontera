@@ -142,21 +142,33 @@ Exactly four. Anything else returns `Err(UnsupportedScenario)`.
 
 A scenario belongs to the sale, not to a line. `classify` in `vat.rs` picks it
 from the buyer and `ship_to` by the conditions below (§3.1 has the order).
-Whether each line fits the scenario is a separate check
-([ADR-0006](adr/0006-oss-charged-percentage.md) §1).
+`check_sale` then checks every line against it: the line's `vat_rate` must be
+one the scenario can carry, by the table in
+[ADR-0006](adr/0006-oss-charged-percentage.md) §1. A posting rule takes its
+scenario from `check_sale`.
 
 | ID | Scenario | Condition | VAT | Buyer status |
 |---|---|---|---|---|
 | `SeDomestic` | Sale within Sweden | Ship-to SE | 25% / 12% / 6% | Any |
 | `EuB2bReverse` | EU business, reverse charge | Ship-to in the EU VAT area (§3.1), ≠ SE, valid VAT no. | 0%, buyer accounts | Business |
 | `EuB2cOss` | EU consumer, destination rate | Ship-to in the EU VAT area (§3.1), ≠ SE, no VAT no. | The destination rate the checkout charged, carried on the line ([ADR-0006](adr/0006-oss-charged-percentage.md)) | Consumer |
-| `ExportOutsideEu` | Outside EU | Ship-to outside the EU VAT area (§3.1) | 0% | Any |
+| `ExportOutsideEu` | Outside EU | Ship-to an assigned ISO 3166-1 code outside the EU VAT area (§3.1) | 0% | Any |
+
+The four scenarios are written for goods. A service sold within Sweden posts
+as `SeDomestic`. A `Services` line on a sale that ships anywhere else is
+refused in every scenario, export included: where a service is taxed follows
+other rules, and v0.1 does not model them.
 
 **Deliberately excluded from v0.1:** VAT-exempt merchants under the 120,000 kr
 turnover threshold, multi-purpose vouchers and gift cards, construction reverse
 charge, margin schemes, prepayments where the VAT point differs from delivery,
-VOEC (Norway) and UK schemes, and destination zero-rating. Each is a real
-scenario. Each is `Err` for now.
+VOEC (Norway) and UK schemes, destination zero-rating, a domestic sale without
+VAT, and services sold outside Sweden. Each is a real scenario.
+
+The last three can be seen in an event, and each is refused with its own
+`ScenarioGap` ([04 §4](04-public-api.md#4-error-taxonomy)). The others can't be
+seen in an event yet, so the library can't refuse them, and the host must keep
+such orders out of the log.
 
 > **VERIFY:** the EU B2C rates in `[vat.rates.oss]` must come from a maintained
 > source, not be hardcoded from memory. Rates change. The table is part of

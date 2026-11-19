@@ -75,8 +75,10 @@ The cost is a few lines of boilerplate. The benefit is that passing an
   Each module with its own failure modes has its own enum (`MoneyError`,
   `AccountError`, `VerificationError`, `EventError`) that nests into it via
   `#[from]` with `#[error(transparent)]`, so `?` works at every boundary and
-  the message is never repeated in the chain. Sub-domain enums (`ScenarioGap`)
-  nest the same way. Enums raised only at config deserialisation, before
+  the message is never repeated in the chain. `ScenarioGap` does not nest. It
+  is plain data with a `Display` and no `Error` impl, carried as the `reason`
+  field of `PostingError::UnsupportedScenario`, because a gap needs the event
+  id beside it. Enums raised only at config deserialisation, before
   `post()` runs (`ConfigError`, `VatError`), do not nest — see
   [04 §4](04-public-api.md#4-error-taxonomy).
 - **Error variants carry data, not prose.** `SettlementMismatch { delta }` is

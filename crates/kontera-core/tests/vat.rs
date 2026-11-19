@@ -1,5 +1,5 @@
-//! Tests for `VatPercent`, `line_vat`, the territory tables and `classify`,
-//! over the public API only.
+//! Tests for `VatPercent`, `line_vat`, the territory tables, `classify` and
+//! `check_sale`, over the public API only.
 //!
 //! `VatPercent`'s grammar is restated here as an independent predicate, and
 //! the parser must agree with it on every string of up to five characters
@@ -19,12 +19,20 @@
 //! `classify` is checked on every code with both kinds of buyer, 1 352 sales,
 //! against the docs/02 §3 conditions restated here. How many codes land in
 //! each scenario is pinned too, so the restatement can't drift with the code.
+//!
+//! `check_sale` is checked on each of those sales with one line, in every
+//! form a line's rate and kind can take: 16 224 sales against the ADR-0006 §1
+//! table restated here. How many give each outcome is pinned as well. Every
+//! sale of up to three lines, to nine codes, then proves that the first failing
+//! line decides the outcome.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDate;
 use kontera_core::{
-    classify, in_eu_vat_area, is_assigned_country_code, line_vat, BuyerTaxStatus, CountryCode,
-    EventId, Money, PostingError, ProviderId, SaleCaptured, SaleLine, SeRates, SupplyKind,
-    VatNumber, VatPercent, VatRate, VatScenario,
+    check_sale, classify, in_eu_vat_area, is_assigned_country_code, line_vat, BuyerTaxStatus,
+    CountryCode, EventId, Money, PostingError, ProviderId, SaleCaptured, SaleLine, ScenarioGap,
+    SeRates, SupplyKind, VatNumber, VatPercent, VatRate, VatRates, VatScenario,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -440,5 +448,478 @@ proptest! {
             vat_number: VatNumber::parse(&number).unwrap(),
         };
         prop_assert_eq!(classify(&sale(buyer, &s)), classify(&sale(business(), &s)));
+    }
+}
+
+// ── Display ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_rate_displays_as_its_wire_spelling() {
+    // For the four classes, `Display` is the JSON string without its quotes.
+    for rate in [
+        VatRate::Standard,
+        VatRate::Reduced12,
+        VatRate::Reduced6,
+        VatRate::Zero,
+    ] {
+        let wire = serde_json::to_string(&rate).unwrap();
+        assert_eq!(format!("\"{rate}\""), wire);
+    }
+    // The OSS form is an object on the wire, and reads as words in a message.
+    assert_eq!(
+        VatRate::Destination(pct(1_900)).to_string(),
+        "destination 19.00"
+    );
+}
+
+#[test]
+fn a_scenario_displays_as_its_docs_02_identifier() {
+    let shown = [
+        (VatScenario::SeDomestic, "SeDomestic"),
+        (VatScenario::EuB2bReverse, "EuB2bReverse"),
+        (VatScenario::EuB2cOss, "EuB2cOss"),
+        (VatScenario::ExportOutsideEu, "ExportOutsideEu"),
+    ];
+    for (scenario, id) in shown {
+        assert_eq!(scenario.to_string(), id);
+    }
+}
+
+// ── Line check ───────────────────────────────────────────────────────────
+
+/// `[vat.rates.oss]` for these tests, as country and hundredths of a percent.
+/// The numbers are made up. No other country lists anything.
+const LISTED: [(&str, i64); 3] = [("DE", 1_100), ("MC", 1_100), ("XI", 425)];
+
+fn rates() -> VatRates {
+    let mut oss: BTreeMap<CountryCode, BTreeSet<VatPercent>> = BTreeMap::new();
+    for (country, bp) in LISTED {
+        oss.entry(code(country)).or_default().insert(pct(bp));
+    }
+    VatRates { se: table(), oss }
+}
+
+/// Every form a line's rate can take against `rates()`: the four classes, a
+/// percentage listed for `DE` and `MC`, and one listed for `XI` only.
+fn rate_forms() -> [VatRate; 6] {
+    [
+        VatRate::Standard,
+        VatRate::Reduced12,
+        VatRate::Reduced6,
+        VatRate::Zero,
+        VatRate::Destination(pct(1_100)),
+        VatRate::Destination(pct(425)),
+    ]
+}
+
+fn sale_of(buyer: BuyerTaxStatus, ship_to: &str, lines: Vec<SaleLine>) -> SaleCaptured {
+    SaleCaptured {
+        lines,
+        ..sale(buyer, ship_to)
+    }
+}
+
+fn one_line(rate: VatRate, kind: SupplyKind) -> Vec<SaleLine> {
+    vec![SaleLine::new("x".to_owned(), Money::from_ore(10_000), rate, kind).unwrap()]
+}
+
+/// Every sale with one line: 676 codes × 2 buyers × 6 rates × 2 kinds.
+fn every_single_line_sale() -> Vec<(BuyerTaxStatus, String, VatRate, SupplyKind)> {
+    let mut sales = Vec::new();
+    for c in every_code() {
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            for rate in rate_forms() {
+                for kind in [SupplyKind::Goods, SupplyKind::Services] {
+                    sales.push((buyer.clone(), c.to_string(), rate, kind));
+                }
+            }
+        }
+    }
+    sales
+}
+
+/// What `check_sale` must answer for a sale whose only line is `(rate, kind)`.
+/// This is the ADR-0006 §1 table restated by column, one rate at a time,
+/// where `vat.rs` goes by row, one scenario at a time.
+fn reference_check(
+    buyer: &BuyerTaxStatus,
+    ship_to: &str,
+    rate: VatRate,
+    kind: SupplyKind,
+) -> Result<VatScenario, PostingError> {
+    let event = || EventId::parse("ord_1").unwrap();
+    let Some(scenario) = reference_scenario(buyer, ship_to) else {
+        return Err(unknown(ship_to));
+    };
+    let gap = |reason| {
+        Err(PostingError::UnsupportedScenario {
+            event: event(),
+            reason,
+        })
+    };
+    let mismatch = Err(PostingError::VatRateMismatch {
+        event: event(),
+        line: 0,
+        scenario,
+        vat_rate: rate,
+    });
+    if kind == SupplyKind::Services && ship_to != "SE" {
+        return gap(ScenarioGap::CrossBorderServices);
+    }
+    match rate {
+        VatRate::Standard | VatRate::Reduced12 | VatRate::Reduced6 => {
+            if scenario == VatScenario::SeDomestic {
+                Ok(scenario)
+            } else {
+                mismatch
+            }
+        }
+        VatRate::Zero => match scenario {
+            VatScenario::SeDomestic => gap(ScenarioGap::DomesticZeroRate),
+            VatScenario::EuB2cOss => gap(ScenarioGap::DestinationZeroRate),
+            VatScenario::EuB2bReverse | VatScenario::ExportOutsideEu => Ok(scenario),
+        },
+        VatRate::Destination(percent) => {
+            if scenario != VatScenario::EuB2cOss {
+                mismatch
+            } else if LISTED.contains(&(ship_to, hundredths(percent))) {
+                Ok(scenario)
+            } else {
+                Err(PostingError::UnlistedOssRate {
+                    event: event(),
+                    line: 0,
+                    country: code(ship_to),
+                    percent,
+                })
+            }
+        }
+    }
+}
+
+/// A percentage back in hundredths: `11.00` is `1100`.
+fn hundredths(percent: VatPercent) -> i64 {
+    percent.to_string().replace('.', "").parse().unwrap()
+}
+
+#[test]
+fn check_sale_agrees_with_the_restated_table_on_every_single_line_sale() {
+    let rates = rates();
+    let sales = every_single_line_sale();
+    assert_eq!(sales.len(), 16_224);
+    for (buyer, s, rate, kind) in sales {
+        let expected = reference_check(&buyer, &s, rate, kind);
+        let sale = sale_of(buyer, &s, one_line(rate, kind));
+        assert_eq!(check_sale(&sale, &rates), expected, "{s} {rate} {kind:?}");
+    }
+}
+
+#[test]
+fn each_line_outcome_covers_the_expected_number_of_sales() {
+    // In the order: passes, cross-border service, destination zero rate,
+    // domestic zero rate, mismatch, unlisted rate, unknown `ship_to`.
+    let rates = rates();
+    let mut counts = [0; 7];
+    for (buyer, s, rate, kind) in every_single_line_sale() {
+        let slot = match check_sale(&sale_of(buyer, &s, one_line(rate, kind)), &rates) {
+            Ok(_) => 0,
+            Err(PostingError::UnsupportedScenario { reason, .. }) => match reason {
+                ScenarioGap::CrossBorderServices => 1,
+                ScenarioGap::DestinationZeroRate => 2,
+                ScenarioGap::DomesticZeroRate => 3,
+            },
+            Err(PostingError::VatRateMismatch { .. }) => 4,
+            Err(PostingError::UnlistedOssRate { .. }) => 5,
+            Err(PostingError::UnknownShipTo { .. }) => 6,
+            Err(
+                other @ (PostingError::Money(_)
+                | PostingError::Account(_)
+                | PostingError::Verification(_)
+                | PostingError::Event(_)),
+            ) => panic!("{s}: {other}"),
+        };
+        counts[slot] += 1;
+    }
+    // Each code gives 12 sales per buyer. With both buyers:
+    // - 426 codes name no country: 426 × 24 = 10 224 unknown.
+    // - 249 codes are abroad, and a service there is a gap: 249 × 12 = 2 988.
+    // - `SE`, goods or services: 3 classes pass, `zero` is a gap, 2
+    //   destinations mismatch. × 4 = 12 pass, 4 gaps, 8 mismatches.
+    // - 28 OSS codes, goods, consumer: 84 class mismatches, 28 zero gaps, and
+    //   56 destinations of which `DE`, `MC` and `XI` list one each: 3 pass,
+    //   53 unlisted.
+    // - 28 codes, goods, business: `zero` passes 28 times, 140 mismatches.
+    // - 221 exports, goods, both buyers: `zero` passes 442 times, 2 210
+    //   mismatches.
+    assert_eq!(counts, [485, 2_988, 28, 4, 2_442, 53, 10_224]);
+}
+
+#[test]
+fn a_sale_with_no_lines_is_checked_as_classify_alone() {
+    // Refusing an empty sale is the posting rule's job, not this check's.
+    let rates = rates();
+    for c in every_code() {
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            let empty = sale(buyer, &c.to_string());
+            assert_eq!(check_sale(&empty, &rates), classify(&empty), "{c}");
+        }
+    }
+}
+
+// ── Line check: several lines ────────────────────────────────────────────
+
+/// `err` as it is reported when its line sits at `index`. A gap and an
+/// unknown `ship_to` name no line, so they are unchanged.
+fn at_line(err: PostingError, index: usize) -> PostingError {
+    match err {
+        PostingError::VatRateMismatch {
+            event,
+            scenario,
+            vat_rate,
+            ..
+        } => PostingError::VatRateMismatch {
+            event,
+            line: index,
+            scenario,
+            vat_rate,
+        },
+        PostingError::UnlistedOssRate {
+            event,
+            country,
+            percent,
+            ..
+        } => PostingError::UnlistedOssRate {
+            event,
+            line: index,
+            country,
+            percent,
+        },
+        other @ (PostingError::UnsupportedScenario { .. }
+        | PostingError::UnknownShipTo { .. }
+        | PostingError::Money(_)
+        | PostingError::Account(_)
+        | PostingError::Verification(_)
+        | PostingError::Event(_)) => other,
+    }
+}
+
+fn goods(rate: VatRate) -> SaleLine {
+    line(10_000, rate)
+}
+
+fn service(rate: VatRate) -> SaleLine {
+    SaleLine::new(
+        "x".to_owned(),
+        Money::from_ore(10_000),
+        rate,
+        SupplyKind::Services,
+    )
+    .unwrap()
+}
+
+fn gap(reason: ScenarioGap) -> PostingError {
+    PostingError::UnsupportedScenario {
+        event: EventId::parse("ord_1").unwrap(),
+        reason,
+    }
+}
+
+#[test]
+fn a_sale_gives_the_outcome_of_its_first_failing_line() {
+    // Every sale of up to three lines, each line in any of its 12 forms, to
+    // nine codes of every kind: domestic, OSS destinations with and without
+    // listed rates, exports, and one that names no country. What each line
+    // gives alone is proven above. This proves how lines combine.
+    let rates = rates();
+    let forms: Vec<SaleLine> = rate_forms()
+        .into_iter()
+        .flat_map(|rate| [goods(rate), service(rate)])
+        .collect();
+    let mut sequences: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut frontier = sequences.clone();
+    for _ in 0..3 {
+        frontier = frontier
+            .iter()
+            .flat_map(|seq| (0..forms.len()).map(move |f| [seq.as_slice(), &[f]].concat()))
+            .collect();
+        sequences.extend(frontier.iter().cloned());
+    }
+    assert_eq!(sequences.len(), 1 + 12 + 144 + 1_728);
+
+    let mut failed_at = [0; 3];
+    for s in ["SE", "DE", "MC", "XI", "FR", "AX", "NO", "US", "XK"] {
+        for buyer in [BuyerTaxStatus::Consumer, business()] {
+            let scenario = classify(&sale(buyer.clone(), s));
+            let alone: Vec<Result<VatScenario, PostingError>> = forms
+                .iter()
+                .map(|l| check_sale(&sale_of(buyer.clone(), s, vec![l.clone()]), &rates))
+                .collect();
+            for seq in &sequences {
+                let first_failure = seq
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, &f)| alone[f].clone().err().map(|err| (index, err)));
+                let expected = match first_failure {
+                    Some((index, err)) => {
+                        failed_at[index] += 1;
+                        Err(at_line(err, index))
+                    }
+                    None => scenario.clone(),
+                };
+                let lines = seq.iter().map(|&f| forms[f].clone()).collect();
+                let got = check_sale(&sale_of(buyer.clone(), s, lines), &rates);
+                assert_eq!(got, expected, "{s} {seq:?}");
+            }
+        }
+    }
+    // The first failure was seen at each of the three positions.
+    assert!(failed_at.iter().all(|&n| n > 0), "{failed_at:?}");
+}
+
+#[test]
+fn a_mismatch_and_an_unlisted_rate_name_their_line() {
+    let rates = rates();
+    let listed = || goods(VatRate::Destination(pct(1_100)));
+    let to_germany = |lines| check_sale(&sale_of(BuyerTaxStatus::Consumer, "DE", lines), &rates);
+    assert_eq!(
+        to_germany(vec![listed(), listed(), goods(VatRate::Standard)]),
+        Err(PostingError::VatRateMismatch {
+            event: EventId::parse("ord_1").unwrap(),
+            line: 2,
+            scenario: VatScenario::EuB2cOss,
+            vat_rate: VatRate::Standard,
+        })
+    );
+    // 4.25 is listed for `XI` and not for `DE`.
+    assert_eq!(
+        to_germany(vec![listed(), goods(VatRate::Destination(pct(425)))]),
+        Err(PostingError::UnlistedOssRate {
+            event: EventId::parse("ord_1").unwrap(),
+            line: 1,
+            country: code("DE"),
+            percent: pct(425),
+        })
+    );
+}
+
+#[test]
+fn a_sale_mixing_goods_and_services_abroad_is_a_gap() {
+    let rates = rates();
+    let listed = || goods(VatRate::Destination(pct(1_100)));
+    let unlisted = || goods(VatRate::Destination(pct(425)));
+    let to_germany = |lines| check_sale(&sale_of(BuyerTaxStatus::Consumer, "DE", lines), &rates);
+    let cross_border = Err(gap(ScenarioGap::CrossBorderServices));
+    // The goods line is fine. The service makes the whole sale a gap.
+    assert_eq!(
+        to_germany(vec![listed(), service(VatRate::Standard)]),
+        cross_border
+    );
+    assert_eq!(
+        to_germany(vec![service(VatRate::Standard), unlisted()]),
+        cross_border
+    );
+    // Lines are read in order, so a bad goods line ahead of the service wins.
+    assert!(matches!(
+        to_germany(vec![unlisted(), service(VatRate::Standard)]),
+        Err(PostingError::UnlistedOssRate { line: 0, .. })
+    ));
+    // Within Sweden the same mix is an ordinary domestic sale.
+    let domestic = vec![goods(VatRate::Standard), service(VatRate::Reduced12)];
+    assert_eq!(
+        check_sale(&sale_of(BuyerTaxStatus::Consumer, "SE", domestic), &rates),
+        Ok(VatScenario::SeDomestic)
+    );
+}
+
+#[test]
+fn a_service_abroad_is_a_gap_whatever_rate_it_carries() {
+    // Each rate here is right or wrong for its scenario's goods: a Swedish
+    // class on an OSS sale, a listed percentage, `zero` on a reverse charge
+    // and on an export. The service is refused first every time, as a gap
+    // and not as the platform's mistake.
+    let rates = rates();
+    let listed_for_de = VatRate::Destination(pct(1_100));
+    let listed_for_xi = VatRate::Destination(pct(425));
+    let cases = [
+        (BuyerTaxStatus::Consumer, "DE", VatRate::Standard),
+        (BuyerTaxStatus::Consumer, "DE", listed_for_de),
+        (BuyerTaxStatus::Consumer, "XI", listed_for_xi),
+        (business(), "DE", VatRate::Zero),
+        (BuyerTaxStatus::Consumer, "US", VatRate::Zero),
+        (business(), "AX", VatRate::Standard),
+    ];
+    for (buyer, s, rate) in cases {
+        assert_eq!(
+            check_sale(&sale_of(buyer, s, vec![service(rate)]), &rates),
+            Err(gap(ScenarioGap::CrossBorderServices)),
+            "{s} {rate}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_ship_to_is_reported_before_any_line() {
+    // Every line here would fail on its own.
+    let rates = rates();
+    let lines = vec![service(VatRate::Zero), goods(VatRate::Destination(pct(1)))];
+    assert_eq!(
+        check_sale(&sale_of(BuyerTaxStatus::Consumer, "XK", lines), &rates),
+        Err(unknown("XK"))
+    );
+}
+
+#[test]
+fn the_oss_table_can_refuse_a_line_and_never_admit_one() {
+    let line = || vec![goods(VatRate::Destination(pct(1_100)))];
+    // With nothing listed, no destination percentage passes anywhere.
+    let none = VatRates {
+        se: table(),
+        oss: BTreeMap::new(),
+    };
+    assert!(matches!(
+        check_sale(&sale_of(BuyerTaxStatus::Consumer, "DE", line()), &none),
+        Err(PostingError::UnlistedOssRate { line: 0, .. })
+    ));
+    // `Config::new` refuses these keys. A table built by hand can hold them,
+    // and they still let no destination percentage onto a sale that is not
+    // an OSS sale.
+    let mut oss = BTreeMap::new();
+    for key in ["SE", "NO", "DE"] {
+        oss.insert(code(key), BTreeSet::from([pct(1_100)]));
+    }
+    let by_hand = VatRates { se: table(), oss };
+    for (buyer, s) in [
+        (BuyerTaxStatus::Consumer, "SE"),
+        (BuyerTaxStatus::Consumer, "NO"),
+        (business(), "DE"),
+    ] {
+        assert!(
+            matches!(
+                check_sale(&sale_of(buyer, s, line()), &by_hand),
+                Err(PostingError::VatRateMismatch { line: 0, .. })
+            ),
+            "{s}"
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn the_amount_on_a_line_never_changes_the_outcome(
+        ore in 0..=i64::MAX,
+        form in 0..6usize,
+        is_service in any::<bool>(),
+        to in 0..9usize,
+        is_business in any::<bool>(),
+    ) {
+        let rates = rates();
+        let s = ["SE", "DE", "MC", "XI", "FR", "AX", "NO", "US", "XK"][to];
+        let buyer = if is_business { business() } else { BuyerTaxStatus::Consumer };
+        let rate = rate_forms()[form];
+        let kind = if is_service { SupplyKind::Services } else { SupplyKind::Goods };
+        let priced = SaleLine::new("x".to_owned(), Money::from_ore(ore), rate, kind).unwrap();
+        prop_assert_eq!(
+            check_sale(&sale_of(buyer.clone(), s, vec![priced]), &rates),
+            check_sale(&sale_of(buyer, s, one_line(rate, kind)), &rates)
+        );
     }
 }

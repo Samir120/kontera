@@ -364,6 +364,20 @@ pub enum VatRate {
     Destination(VatPercent),
 }
 
+/// The wire spelling, for error messages: `standard`, `reduced12`, `reduced6`
+/// and `zero`. The OSS form is written `destination 19.00`.
+impl fmt::Display for VatRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VatRate::Standard => f.write_str("standard"),
+            VatRate::Reduced12 => f.write_str("reduced12"),
+            VatRate::Reduced6 => f.write_str("reduced6"),
+            VatRate::Zero => f.write_str("zero"),
+            VatRate::Destination(percent) => write!(f, "destination {percent}"),
+        }
+    }
+}
+
 /// Whether a sale line is goods or a service. Affects EU treatment
 /// (docs/04 §2). Wire form: `"goods"`, `"services"`.
 ///

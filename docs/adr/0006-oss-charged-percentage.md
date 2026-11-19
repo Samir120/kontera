@@ -31,23 +31,38 @@ lines are unchanged, byte for byte. An older library refuses the new form with
 `unknown variant`, so it fails closed.
 
 The line can't check its own scenario, because that comes from `buyer` and
-`ship_to`. T9 enforces this:
+`ship_to`. `check_sale` in `vat.rs` checks every line of a sale against the
+scenario that `classify` gave the sale:
 
 | Scenario | Swedish class | `zero` | `destination` |
 |---|---|---|---|
-| `SeDomestic` | allowed | T9 decides | mismatch |
-| `EuB2cOss` | mismatch | gap (§2) | allowed if listed, else unlisted rate (§3) |
-| `EuB2bReverse`, `ExportOutsideEu` | T9 decides | T9 decides | mismatch |
+| `SeDomestic` | allowed | gap `DomesticZeroRate` | `VatRateMismatch` |
+| `EuB2cOss` | `VatRateMismatch` | gap `DestinationZeroRate` (§2) | allowed if listed, else `UnlistedOssRate` (§3) |
+| `EuB2bReverse`, `ExportOutsideEu` | `VatRateMismatch` | allowed | `VatRateMismatch` |
+
+Neither `EuB2bReverse` nor `ExportOutsideEu` charges Swedish VAT (02 §3), so
+`zero` is the only rate they take. `zero` on a domestic sale is a gap because
+v0.1 has no posting for a Swedish sale without VAT.
+
+One check comes before the table. A `Services` line on a sale that ships
+outside Sweden is gap `CrossBorderServices` in every scenario (02 §3). It has
+to come first: such a line can rightly carry a Swedish class, and the table
+would report that as a mismatch.
 
 These failures have different owners, so they are different errors:
 
-- **Gap: an unsupported treatment.** This is `ScenarioGap`, the v0.1 non-goals
-  in machine-readable form (04 §4). The merchant handles the order manually.
+- **Gap: an unsupported treatment.** This is
+  `PostingError::UnsupportedScenario`, carrying a `ScenarioGap`: the v0.1
+  non-goals in machine-readable form (04 §4). The merchant handles the order
+  manually.
 - **Mismatch or unlisted rate: an inconsistent event, or a config or data
-  mismatch.** These are separate typed `PostingError` leaves, because reporting
-  them to the merchant as "handle manually" would hide platform bugs.
+  mismatch.** These are `PostingError::VatRateMismatch` and
+  `PostingError::UnlistedOssRate`, separate typed leaves that name the line,
+  because reporting them to the merchant as "handle manually" would hide
+  platform bugs.
 
-T9 names the variants.
+Lines are checked in order and the first failure is returned, so a sale always
+gives the same error.
 
 A refund line carries the same `vat_rate` as the sale line it reverses, whatever
 the rate is today. T11 enforces this.
